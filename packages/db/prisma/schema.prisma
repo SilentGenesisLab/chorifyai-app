@@ -1,0 +1,201 @@
+// Chorify data model (Prisma 6 / PostgreSQL)
+// Iteration 1: org/user/auth + the entities behind Kuaizi's main lists
+// (recent projects, mass-production, cloud drive, distribution).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- enums ----------
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum ProjectType {
+  SMART_MIX // 智能混剪（经典版）
+  SUPER_MIX // 超级混剪 Pro
+  ONE_CLICK // 一键成片
+}
+
+enum ProjectStatus {
+  DRAFT
+  PROCESSING
+  READY
+}
+
+enum AssetType {
+  VIDEO
+  IMAGE
+  AUDIO
+  PROJECT // 工程
+  FINISHED // 成片
+  MATERIAL // 素材
+}
+
+enum AssetStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum Platform {
+  TIKTOK
+  DOUYIN
+  KUAISHOU
+  YOUTUBE
+}
+
+// ---------- core ----------
+
+model User {
+  id          String    @id @default(cuid())
+  phone       String    @unique
+  nickname    String?
+  avatarUrl   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  memberships   Membership[]
+  projects      Project[]      @relation("ProjectCreatedBy")
+  assets        Asset[]        @relation("AssetCreatedBy")
+  folders       Folder[]       @relation("FolderCreatedBy")
+  distributions Distribution[] @relation("DistributionCreatedBy")
+
+  @@map("users")
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  plan        Plan     @default(PRO)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships   Membership[]
+  projects      Project[]
+  assets        Asset[]
+  folders       Folder[]
+  distributions Distribution[]
+
+  @@map("organizations")
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  role      Role     @default(MEMBER)
+  userId    String
+  orgId     String
+  createdAt DateTime @default(now())
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+  @@map("memberships")
+}
+
+// 最近工程 / 合成量产
+model Project {
+  id          String        @id @default(cuid())
+  name        String
+  type        ProjectType   @default(SMART_MIX)
+  status      ProjectStatus @default(DRAFT)
+  coverUrl    String?
+  width       Int           @default(1080)
+  height      Int           @default(1920)
+  comboCount  Int           @default(0) // 视频组合数
+  orgId       String
+  createdById String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+
+  @@index([orgId, updatedAt])
+  @@map("projects")
+}
+
+// 筷子云盘文件夹
+model Folder {
+  id          String   @id @default(cuid())
+  name        String
+  parentId    String?
+  orgId       String
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent    Folder?      @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]     @relation("FolderTree")
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("FolderCreatedBy", fields: [createdById], references: [id])
+  assets    Asset[]
+
+  @@index([orgId, parentId])
+  @@map("folders")
+}
+
+// 筷子云盘文件
+model Asset {
+  id           String      @id @default(cuid())
+  name         String
+  type         AssetType
+  status       AssetStatus @default(ACTIVE)
+  url          String?
+  thumbnailUrl String?
+  durationSec  Int?
+  folderId     String?
+  orgId        String
+  createdById  String
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  folder    Folder?      @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("AssetCreatedBy", fields: [createdById], references: [id])
+
+  @@index([orgId, type])
+  @@index([folderId])
+  @@map("assets")
+}
+
+// 投放分发
+model Distribution {
+  id           String   @id @default(cuid())
+  title        String
+  platform     Platform @default(TIKTOK)
+  accountCount Int      @default(0)
+  videoCount   Int      @default(0)
+  publishDone  Int      @default(0)
+  publishTotal Int      @default(0)
+  views        Int      @default(0)
+  likes        Int      @default(0)
+  coverUrl     String?
+  orgId        String
+  createdById  String
+  createdAt    DateTime @default(now())
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("DistributionCreatedBy", fields: [createdById], references: [id])
+
+  @@index([orgId, createdAt])
+  @@map("distributions")
+}

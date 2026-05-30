@@ -1,0 +1,42 @@
+# Local development infrastructure: PostgreSQL + Redis.
+# The web (Next.js) and ai-service (FastAPI) apps run on the host via pnpm / uvicorn.
+#   docker compose up -d        # start pg + redis
+#   docker compose down         # stop
+#   docker compose down -v      # stop and wipe data volumes
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chorify-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chorify
+      POSTGRES_PASSWORD: chorify
+      POSTGRES_DB: chorify
+    ports:
+      - "5432:5432"
+    volumes:
+      - chorify_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chorify -d chorify"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: chorify-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - chorify_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  chorify_pg:
+  chorify_redis:
