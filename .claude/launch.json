@@ -4,7 +4,7 @@
     {
       "name": "web",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@chorify/web", "dev"],
+      "runtimeArgs": ["-C", "frontend", "--filter", "@chorify/web", "dev"],
       "port": 3001
     }
   ]

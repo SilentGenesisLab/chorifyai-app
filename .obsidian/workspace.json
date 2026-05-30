@@ -177,5 +177,34 @@
     }
   },
   "active": "a774d6864a35e222",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "backend/README.md",
+    "backend/README.md.tmp.54152.663086dc7c15",
+    "backend/Dockerfile",
+    "backend/Dockerfile.tmp.54152.3fdcea74f84f",
+    "backend/requirements.txt",
+    "backend/requirements.txt.tmp.54152.83fa46000ede",
+    "backend/app/main.py",
+    "backend/app/routers/material.py",
+    "backend/app/routers/upload.py",
+    "backend/app/services/oss.py",
+    "backend/app/core/config.py",
+    "frontend/asset/reference/_decor2.png",
+    "frontend/asset/reference/_fix.png",
+    "frontend/apps/web/public/assets/ink/calligraphy.webp",
+    "frontend/asset/reference/_illus_final.png",
+    "frontend/apps/web/public/assets/ink/village.webp",
+    "frontend/apps/web/public/assets/ink/people.webp",
+    "frontend/apps/web/public/assets/ink/landscape.webp",
+    "frontend/apps/web/public/assets/ink/zongzi.webp",
+    "frontend/apps/web/public/assets/ink/giftbox.webp",
+    "frontend/apps/web/public/assets/ink/skincare.webp",
+    "frontend/apps/ai-service/README.md",
+    "frontend/README.md",
+    "frontend/document/04-开发路线图与里程碑.md",
+    "frontend/document/README.md",
+    "frontend/document/03-技术架构与开发蓝图.md",
+    "frontend/document/02-产品需求与功能规格.md",
+    "frontend/document/01-商业计划书.md"
+  ]
 }

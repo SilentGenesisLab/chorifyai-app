@@ -1,46 +1,46 @@
-# dependencies
+# ---- dependencies ----
 node_modules/
 .pnpm-store/
 
-# next.js
+# ---- next.js / build ----
 .next/
 out/
-next-env.d.ts
-
-# production build
 build/
 dist/
+next-env.d.ts
 
-# environment
+# ---- environment / secrets ----
 .env
-.env*.local
+.env.*
 !.env.example
+*.local
 
-# turborepo
+# ---- turborepo ----
 .turbo/
 
-# prisma local db
+# ---- prisma local db ----
 *.db
 *.db-journal
 
-# python
+# ---- python ----
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 .pytest_cache/
 
-# logs
+# ---- logs ----
 *.log
 npm-debug.log*
 pnpm-debug.log*
 
-# os / editor
-.DS_Store
-Thumbs.db
+# ---- editors / os ----
 .idea/
 .vscode/
+.obsidian/
+.DS_Store
+Thumbs.db
 *.tsbuildinfo
 
-# coverage
+# ---- coverage ----
 coverage/

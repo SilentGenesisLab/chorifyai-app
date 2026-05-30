@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+/* ============================================================
+   Chorify design system — 国风水墨 (ink-wash) theme
+   Palette & type per brand sheet:
+   红 #C0392B · 墨 #1F1F1F · 宣纸 #F7F3EE · 米 #E8DED1
+   金 #D29B4A · 青 #3E8C7A · 蓝 #5568B2 · 紫 #8E6BBE · 灰 #7A7A7A
+   标题 思源宋体 / Noto Serif SC · 正文 思源黑体 / Noto Sans SC
+   ============================================================ */
+@theme {
+  /* surfaces */
+  --color-background: #f7f3ee; /* 宣纸 */
+  --color-surface: #fdfbf6; /* 暖白卡片 */
+  --color-surface-muted: #f1eadf; /* 米色 */
+  --color-paper: #f7f3ee;
+
+  /* ink / text */
+  --color-foreground: #1f1f1f; /* 墨 */
+  --color-ink: #1f1f1f;
+  --color-muted: #9c9082; /* 暖灰 */
+  --color-muted-foreground: #6f665a;
+  --color-border: #e7ddcd; /* 暖边框 */
+  --color-border-strong: #d9ccb6;
+
+  /* brand 朱红 + accents */
+  --color-brand: #c0392b;
+  --color-brand-foreground: #ffffff;
+  --color-brand-deep: #9e2d22;
+  --color-brand-soft: #f3e0dc;
+  --color-gold: #d29b4a;
+  --color-jade: #3e8c7a;
+  --color-azure: #5568b2;
+  --color-violet: #8e6bbe;
+  --color-stone: #7a7a7a;
+
+  /* fonts — system CJK first (looks right offline), Noto/Source as enhancement */
+  --font-sans:
+    "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei",
+    "Hiragino Sans GB", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, Arial, sans-serif;
+  --font-serif:
+    "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun",
+    "Ma Shan Zheng", Georgia, "Times New Roman", serif;
+
+  --radius-card: 1rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-brand) 20%, transparent);
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #d8cdba;
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* serif display headings (宋体) */
+  .font-display {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  /* primary CTA / logo fill — kept named `brand-gradient` so existing
+     in-app usages (button, sidebar) re-skin to red automatically */
+  .brand-gradient {
+    background-image: linear-gradient(
+      160deg,
+      var(--color-brand) 0%,
+      var(--color-brand-deep) 100%
+    );
+  }
+  .brand-text-gradient {
+    background-image: linear-gradient(
+      120deg,
+      var(--color-brand) 0%,
+      var(--color-brand-deep) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* 宣纸网格纹理 — faint manuscript grid */
+  .paper-grid {
+    background-image:
+      linear-gradient(to right, rgba(120, 96, 58, 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(120, 96, 58, 0.045) 1px, transparent 1px);
+    background-size: 26px 26px;
+  }
+
+  /* warm paper vignette for hero */
+  .paper-wash {
+    background:
+      radial-gradient(
+        120% 80% at 50% 0%,
+        rgba(255, 255, 255, 0.7) 0%,
+        rgba(247, 243, 238, 0) 60%
+      ),
+      var(--color-paper);
+  }
+
+  /* soft elevated card */
+  .ink-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    box-shadow:
+      0 1px 2px rgba(31, 31, 31, 0.04),
+      0 8px 24px -16px rgba(31, 31, 31, 0.18);
+  }
+
+  /* hairline divider with center seal feel */
+  .ink-rule {
+    height: 1px;
+    background: linear-gradient(
+      to right,
+      transparent,
+      var(--color-border-strong),
+      transparent
+    );
+  }
+
+  .shadow-seal {
+    box-shadow: 0 6px 18px -8px rgba(192, 57, 43, 0.5);
+  }
+}

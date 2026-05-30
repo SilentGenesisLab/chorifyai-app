@@ -1,0 +1,32 @@
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  // @chorify/db is published as TypeScript source — let Next transpile it.
+  transpilePackages: ["@chorify/db"],
+  // Keep Node-only packages out of the bundle.
+  serverExternalPackages: [
+    "@prisma/client",
+    "prisma",
+    "ioredis",
+    "ali-oss",
+    "@alicloud/dysmsapi20170525",
+    "@alicloud/openapi-client",
+    "@alicloud/tea-util",
+  ],
+  images: {
+    remotePatterns: [{ protocol: "https", hostname: "**" }],
+  },
+  // Same-origin proxy to the FastAPI backend (uploads + AI generation).
+  // Keeps the browser on one origin (no CORS) and works in prod where Next
+  // forwards server-side to 127.0.0.1:8000.
+  async rewrites() {
+    const base = process.env.AI_SERVICE_URL ?? "http://127.0.0.1:8000";
+    return [
+      { source: "/api/upload", destination: `${base}/api/upload` },
+      { source: "/api/upload/:path*", destination: `${base}/api/upload/:path*` },
+      { source: "/api/material/:path*", destination: `${base}/api/material/:path*` },
+    ];
+  },
+};
+
+export default nextConfig;
