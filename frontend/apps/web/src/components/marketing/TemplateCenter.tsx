@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { TEMPLATES } from "@/lib/marketing";
 import { SectionHeading } from "@/components/decor/ink";
+import { SectionInk } from "./SectionInk";
 import { TONE_COLOR, type Tone } from "./shared";
 import { cn } from "@/lib/utils";
 
@@ -14,8 +15,9 @@ export function TemplateCenter() {
   const [active, setActive] = useState(0);
 
   return (
-    <section id="templates" className="bg-surface-muted/50 py-20">
-      <div className="mx-auto max-w-7xl px-6">
+    <section id="templates" className="relative overflow-hidden py-20">
+      <SectionInk posY="72%" />
+      <div className="relative z-10 mx-auto max-w-7xl px-6">
         <SectionHeading title={TEMPLATES.title} />
 
         {/* tabs */}
@@ -46,11 +48,11 @@ export function TemplateCenter() {
                 key={c.title}
                 className="group ink-card overflow-hidden p-0 transition hover:-translate-y-1 hover:shadow-lg"
               >
-                <div className="relative aspect-[3/4] overflow-hidden bg-surface-muted">
+                <div className="relative aspect-[4/5] overflow-hidden bg-surface-muted">
                   <img
                     src={`/assets/ink/${TEMPLATE_IMG[i % TEMPLATE_IMG.length]}.webp`}
                     alt={c.title}
-                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    className="absolute inset-0 h-full w-full object-cover object-center transition-transform duration-300 group-hover:scale-105"
                   />
                   <span
                     className="absolute left-2.5 top-2.5 rounded-md px-2 py-0.5 text-[11px] font-medium text-white"

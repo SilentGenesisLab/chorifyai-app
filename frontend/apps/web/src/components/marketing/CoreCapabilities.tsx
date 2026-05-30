@@ -1,24 +1,14 @@
 import { CAPABILITIES } from "@/lib/marketing";
 import { SectionHeading } from "@/components/decor/ink";
+import { SectionInk } from "./SectionInk";
 import { IconChip, type Tone } from "./shared";
 
 const TONES: Tone[] = ["brand", "jade", "gold", "azure", "violet", "brand"];
 
 export function CoreCapabilities() {
   return (
-    <section id="capabilities" className="relative overflow-hidden bg-surface-muted/50 py-20">
-      <img
-        src="/assets/ink/mountains.webp"
-        alt=""
-        aria-hidden
-        className="pointer-events-none absolute -left-10 bottom-0 h-64 opacity-25 mix-blend-multiply"
-      />
-      <img
-        src="/assets/ink/bamboo.webp"
-        alt=""
-        aria-hidden
-        className="pointer-events-none absolute -right-4 top-8 h-72 opacity-30 mix-blend-multiply"
-      />
+    <section id="capabilities" className="relative overflow-hidden py-20">
+      <SectionInk posY="42%" />
       <div className="relative z-10 mx-auto max-w-7xl px-6">
         <SectionHeading title={CAPABILITIES.title} />
 

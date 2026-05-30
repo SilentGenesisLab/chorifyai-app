@@ -9,6 +9,7 @@ import { CustomerCases } from "@/components/marketing/CustomerCases";
 import { TemplateCenter } from "@/components/marketing/TemplateCenter";
 import { Faq } from "@/components/marketing/Faq";
 import { FloatingToolbar } from "@/components/marketing/FloatingToolbar";
+import { SectionInk } from "@/components/marketing/SectionInk";
 
 export default function LandingPage() {
   return (
@@ -32,10 +33,13 @@ export default function LandingPage() {
       {/* 核心能力 */}
       <CoreCapabilities />
 
-      {/* 行业解决方案 + 客户案例 */}
-      <section className="mx-auto grid max-w-7xl gap-12 px-6 py-20 lg:grid-cols-2">
-        <IndustrySolutions />
-        <CustomerCases />
+      {/* 行业解决方案（左·宽） + 客户案例（右） */}
+      <section className="relative overflow-hidden py-20">
+        <SectionInk posY="60%" />
+        <div className="relative z-10 mx-auto grid max-w-7xl items-start gap-12 px-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <IndustrySolutions />
+          <CustomerCases />
+        </div>
       </section>
 
       {/* 模板中心 */}
