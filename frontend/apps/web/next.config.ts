@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Allow a separate build dir (e.g. a parallel preview server on another port)
+  // so two `next dev` instances don't fight over .next.
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
   // @chorify/db is published as TypeScript source — let Next transpile it.
   transpilePackages: ["@chorify/db"],
   // Keep Node-only packages out of the bundle.

@@ -8,7 +8,7 @@ import { SectionInk } from "./SectionInk";
 import { cn } from "@/lib/utils";
 
 export function Faq() {
-  const [open, setOpen] = useState<number | null>(0);
+  const [open, setOpen] = useState(0);
 
   return (
     <section id="faq" className="relative overflow-hidden py-20">
@@ -24,7 +24,7 @@ export function Faq() {
               <button
                 key={item.q}
                 type="button"
-                onClick={() => setOpen(isOpen ? null : i)}
+                onClick={() => setOpen(i)}
                 className={cn(
                   "flex items-center gap-2 rounded-full border px-5 py-2.5 text-sm font-medium transition-colors",
                   isOpen
@@ -44,16 +44,14 @@ export function Faq() {
           })}
         </div>
 
-        {/* 选中问题的答案 */}
-        {open !== null && (
-          <div className="mx-auto mt-6 max-w-3xl">
-            <div className="ink-card p-6 text-center">
-              <p className="text-[15px] leading-relaxed text-muted-foreground">
-                {FAQ.items[open].a}
-              </p>
-            </div>
+        {/* 选中问题的答案（随 activate 切换） */}
+        <div className="mx-auto mt-6 max-w-3xl">
+          <div className="ink-card p-6 text-center">
+            <p className="text-[15px] leading-relaxed text-muted-foreground">
+              {FAQ.items[open].a}
+            </p>
           </div>
-        )}
+        </div>
       </div>
     </section>
   );

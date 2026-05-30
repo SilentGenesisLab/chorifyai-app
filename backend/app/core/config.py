@@ -20,6 +20,17 @@ class Settings(BaseSettings):
 
     max_upload_mb: int = 60
 
+    # ---- Doubao (ByteDance) speech ----
+    doubao_tts_url: str = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    doubao_tts_access_key: str = ""
+    doubao_tts_app_id: str = ""
+    doubao_tts_resource_id: str = "seed-tts-2.0"
+    doubao_asr_url: str = (
+        "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+    )
+    doubao_asr_api_key: str = ""
+    doubao_asr_resource_id: str = "volc.seedasr.auc"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

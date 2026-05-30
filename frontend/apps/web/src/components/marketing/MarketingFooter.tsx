@@ -18,7 +18,7 @@ export function MarketingFooter() {
         src="/assets/ink/boat.webp"
         alt=""
         aria-hidden
-        className="pointer-events-none absolute bottom-6 left-[10%] w-24 opacity-70 mix-blend-multiply"
+        className="pointer-events-none absolute bottom-3 left-[3%] w-20 opacity-55 mix-blend-multiply"
       />
 
       <div className="relative mx-auto max-w-7xl px-6 py-14">
@@ -81,8 +81,9 @@ export function MarketingFooter() {
 
         <div className="ink-rule my-9" />
 
-        <div className="flex flex-col items-center justify-between gap-2 text-xs text-muted sm:flex-row">
+        <div className="flex flex-col items-center justify-center gap-1 text-center text-xs text-muted sm:flex-row sm:gap-3">
           <span>{FOOTER.copyright}</span>
+          <span aria-hidden className="hidden sm:inline">·</span>
           <span>{FOOTER.icp}</span>
         </div>
       </div>

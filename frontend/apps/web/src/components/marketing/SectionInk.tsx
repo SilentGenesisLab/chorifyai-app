@@ -20,8 +20,9 @@ export function SectionInk({
       aria-hidden
     >
       <img
-        src="/assets/ink/hero-bg.webp"
+        src="/assets/ink/hero-bg-sm.webp"
         alt=""
+        loading="lazy"
         className="h-full w-full object-cover"
         style={{ objectPosition: `center ${posY}` }}
       />

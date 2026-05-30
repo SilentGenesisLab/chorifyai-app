@@ -13,21 +13,10 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // 字体走系统 CJK 字体栈（见 globals.css）：思源/Source Han 若已安装则优先，
+  // 否则回退到 Songti/PingFang/微软雅黑等。不引外部 Google Fonts，避免国内加载阻塞。
   return (
     <html lang="zh-CN">
-      <head>
-        {/* 思源宋体/黑体作为渐进增强；系统 CJK 字体兜底（见 globals.css 字体栈）*/}
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          rel="preconnect"
-          href="https://fonts.gstatic.com"
-          crossOrigin="anonymous"
-        />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;700;900&display=swap"
-          rel="stylesheet"
-        />
-      </head>
       <body>{children}</body>
     </html>
   );
