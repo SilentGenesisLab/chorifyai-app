@@ -36,9 +36,22 @@ export async function POST(req: Request) {
   }
 
   const code = generateCode();
+
+  // Send first; only persist the code + cooldown if delivery succeeded, so a
+  // provider failure (rate limit, transient error) lets the user retry cleanly
+  // instead of surfacing a 500.
+  try {
+    await sendLoginCode(phone, code);
+  } catch (err) {
+    console.error("[send-code] SMS delivery failed:", err);
+    return NextResponse.json(
+      { ok: false, error: "短信发送失败，请稍后重试" },
+      { status: 502 },
+    );
+  }
+
   await redis.set(`sms:code:${phone}`, code, "EX", 300);
   await redis.set(rateKey, "1", "EX", 60);
-  await sendLoginCode(phone, code);
 
   // In dev with the mock provider, surface the code so you can log in fast.
   const devCode =
