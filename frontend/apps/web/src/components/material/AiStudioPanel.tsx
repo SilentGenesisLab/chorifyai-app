@@ -11,55 +11,62 @@ import {
   Sparkles,
   ArrowRight,
   Wand2,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { uploadFile } from "@/lib/upload";
 import { Dropdown } from "./Dropdown";
 import {
   type GenSettings,
+  type GenerateFn,
   DEFAULT_SETTINGS,
   MODELS,
   RATIOS,
   RESOLUTIONS,
   DURATIONS,
   costOf,
+  tileGradient,
 } from "./types";
 
-const SAMPLE = "/illus_cosmetics.webp";
-const EXAMPLES = [
-  "/illus_cosmetics.webp",
-  "/illus_gift.webp",
-  "/illus_people.webp",
-  "/illus_river.webp",
-];
+const EXAMPLES = ["护肤精华", "吹风机", "口红", "咖啡杯"];
 
-export function AiStudioPanel({
-  onGenerate,
-}: {
-  onGenerate: (p: { settings: GenSettings; imageName?: string }) => Promise<void>;
-}) {
+export function AiStudioPanel({ onGenerate }: { onGenerate: GenerateFn }) {
   const [image, setImage] = useState<{ url: string; name: string } | null>(null);
   const [settings, setSettings] = useState<GenSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [promo, setPromo] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const set = <K extends keyof GenSettings>(k: K, v: GenSettings[K]) =>
     setSettings((s) => ({ ...s, [k]: v }));
 
-  function onFile(f?: File | null) {
+  async function onFile(f?: File | null) {
     if (!f) return;
     if (!f.type.startsWith("image/")) return;
     if (f.size > 10 * 1024 * 1024) {
       alert("图片需 ≤ 10MB");
       return;
     }
-    setImage({ url: URL.createObjectURL(f), name: f.name });
+    setUploading(true);
+    try {
+      const r = await uploadFile(f, "image");
+      setImage({ url: r.url, name: r.name });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "上传失败");
+    } finally {
+      setUploading(false);
+    }
   }
 
   async function handleGenerate() {
     setBusy(true);
     try {
-      await onGenerate({ settings, imageName: image?.name });
+      await onGenerate({
+        settings,
+        durationSec: settings.duration,
+        sourceUrl: image?.url,
+      });
     } finally {
       setBusy(false);
     }
@@ -89,16 +96,19 @@ export function AiStudioPanel({
               </button>
             </div>
             <div className="hidden shrink-0 items-center gap-2 sm:flex">
-              <div className="relative h-20 w-16 overflow-hidden rounded-lg border border-border">
-                <Image src={EXAMPLES[0]} alt="" fill sizes="64px" className="object-cover" />
-              </div>
+              <div
+                className="h-20 w-16 rounded-lg border border-border"
+                style={{ backgroundImage: tileGradient("studio-a") }}
+              />
               <ArrowRight className="h-5 w-5 text-brand/70" />
-              <div className="relative h-20 w-16 overflow-hidden rounded-lg border border-border">
-                <Image src={EXAMPLES[2]} alt="" fill sizes="64px" className="object-cover" />
-              </div>
-              <div className="relative h-20 w-16 overflow-hidden rounded-lg border border-border">
-                <Image src={EXAMPLES[1]} alt="" fill sizes="64px" className="object-cover" />
-              </div>
+              <div
+                className="h-20 w-16 rounded-lg border border-border"
+                style={{ backgroundImage: tileGradient("studio-b") }}
+              />
+              <div
+                className="h-20 w-16 rounded-lg border border-border"
+                style={{ backgroundImage: tileGradient("studio-c") }}
+              />
             </div>
           </div>
         </div>
@@ -137,13 +147,18 @@ export function AiStudioPanel({
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border-strong bg-surface/60 text-center transition hover:border-brand/50 hover:bg-brand-soft/30"
+              disabled={uploading}
+              className="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border-strong bg-surface/60 text-center transition hover:border-brand/50 hover:bg-brand-soft/30 disabled:opacity-70"
             >
               <span className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-muted text-muted">
-                <ImagePlus className="h-6 w-6" />
+                {uploading ? (
+                  <Loader2 className="h-6 w-6 animate-spin text-brand" />
+                ) : (
+                  <ImagePlus className="h-6 w-6" />
+                )}
               </span>
               <span className="text-[15px] font-medium text-foreground">
-                上传产品/场景图
+                {uploading ? "上传中…" : "上传产品/场景图"}
               </span>
               <span className="text-xs text-muted-foreground">
                 jpg/jpeg/png ≤ 10MB，宽/高 ≥ 400px
@@ -154,17 +169,6 @@ export function AiStudioPanel({
             </button>
           )}
 
-          {!image && (
-            <div className="mt-3 text-center">
-              <button
-                type="button"
-                onClick={() => setImage({ url: SAMPLE, name: "示例-护肤精华.png" })}
-                className="text-xs text-jade hover:underline"
-              >
-                没有图？用示例图快速体验 →
-              </button>
-            </div>
-          )}
         </div>
 
         {/* 影棚社区示例 */}
@@ -173,15 +177,18 @@ export function AiStudioPanel({
             没想好拍什么，去影棚社区看看 →
           </p>
           <div className="flex justify-center gap-3">
-            {EXAMPLES.map((src, i) => (
+            {EXAMPLES.map((label, i) => (
               <div
                 key={i}
                 className={cn(
                   "relative h-24 w-20 overflow-hidden rounded-xl border border-border shadow-sm",
                   i % 2 === 0 ? "rotate-[-3deg]" : "rotate-[3deg]",
                 )}
+                style={{ backgroundImage: tileGradient(label) }}
               >
-                <Image src={src} alt="" fill sizes="80px" className="object-cover" />
+                <span className="absolute inset-x-0 bottom-0 bg-black/35 py-0.5 text-center text-[10px] text-white backdrop-blur">
+                  {label}
+                </span>
               </div>
             ))}
           </div>

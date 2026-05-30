@@ -1,9 +1,8 @@
 "use client";
 
-import Image from "next/image";
-import { Play, Loader2, Sparkles } from "lucide-react";
+import { Play, Loader2, Sparkles, Film } from "lucide-react";
 import { cn, formatDateTime, formatDuration } from "@/lib/utils";
-import { type GenJob, mockThumb } from "./types";
+import { type GenJob, tileGradient } from "./types";
 
 export function ResultsPanel({
   results,
@@ -64,20 +63,15 @@ function ResultCard({ job, list }: { job: GenJob; list: boolean }) {
 
 function VideoFace({ job }: { job: GenJob }) {
   const processing = job.status === "processing";
-  const thumb = job.thumbnailUrl || mockThumb(job.id);
   return (
-    <Face>
-      <Image
-        src={thumb}
-        alt=""
-        fill
-        sizes="240px"
-        className={cn("object-cover", processing && "scale-105 opacity-40 blur-sm")}
-      />
+    <Face seed={job.id}>
       {processing ? (
         <Processing progress={job.progress} />
       ) : (
         <>
+          <span className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-white/25 text-white/85 backdrop-blur-sm">
+            <Film className="h-6 w-6" />
+          </span>
           <PlayBadge />
           {job.durationSec != null && <DurationBadge sec={job.durationSec} />}
         </>
@@ -91,10 +85,10 @@ function AudioFace({ job }: { job: GenJob }) {
   const processing = job.status === "processing";
   const bars = waveHeights(job.id);
   return (
-    <Face>
+    <Face seed={job.id} soft>
       <div
         className={cn(
-          "flex h-1/2 w-full items-center justify-center gap-[3px] px-3",
+          "relative flex h-1/2 w-full items-center justify-center gap-[3px] px-3",
           processing && "opacity-30",
         )}
       >
@@ -123,9 +117,25 @@ function AudioFace({ job }: { job: GenJob }) {
   );
 }
 
-function Face({ children }: { children: React.ReactNode }) {
+function Face({
+  children,
+  seed,
+  soft,
+}: {
+  children: React.ReactNode;
+  seed: string;
+  soft?: boolean;
+}) {
   return (
-    <div className="relative flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-surface-muted">
+    <div className="relative flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-xl border border-border">
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage: soft
+            ? "linear-gradient(135deg, var(--color-surface-muted), #ece4d6)"
+            : tileGradient(seed),
+        }}
+      />
       {children}
     </div>
   );

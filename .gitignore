@@ -41,6 +41,8 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 *.tsbuildinfo
+~$*
+*.tmp
 
 # ---- coverage ----
 coverage/

@@ -39,20 +39,26 @@ export interface GenJob {
   title?: string;
 }
 
-// Mock video thumbnails reuse on-theme illustrations from /public.
-const MOCK_THUMBS = [
-  "/illus_people.webp",
-  "/illus_cosmetics.webp",
-  "/illus_river.webp",
-  "/illus_gift.webp",
-  "/illus_zongzi.webp",
-  "/illus_mountain.webp",
+// Deterministic ink-wash gradient for placeholder tiles — asset-independent,
+// so the demo never shows broken images while real OSS thumbnails arrive later.
+const TILE_PAIRS: [string, string][] = [
+  ["#f3e0dc", "#e3a99d"],
+  ["#ece2cd", "#d6bd8e"],
+  ["#d8e8e1", "#a4cfc2"],
+  ["#dde1f0", "#aebbe0"],
+  ["#e7dff0", "#c7b0e0"],
+  ["#efe6d6", "#d8c09f"],
 ];
 
-export function mockThumb(id: string): string {
+export function tilePair(seed: string): [string, string] {
   let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return MOCK_THUMBS[h % MOCK_THUMBS.length];
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return TILE_PAIRS[h % TILE_PAIRS.length];
+}
+
+export function tileGradient(seed: string): string {
+  const [a, b] = tilePair(seed);
+  return `linear-gradient(135deg, ${a}, ${b})`;
 }
 
 export const MODELS = ["Seedance 2.0", "Seedance 1.5", "Kling 1.6", "Vidu 2.0"];
@@ -70,3 +76,15 @@ export const DEFAULT_SETTINGS: GenSettings = {
   resolution: "720p",
   duration: 5,
 };
+
+export type GeneratePayload = {
+  settings?: GenSettings;
+  durationSec?: number;
+  sourceUrl?: string;
+  refs?: string[];
+  prompt?: string;
+  voice?: string;
+  ip?: string;
+};
+
+export type GenerateFn = (payload: GeneratePayload) => Promise<void>;

@@ -7,20 +7,39 @@ import {
   MATERIAL_TABS,
   type MaterialTab,
   type GenJob,
-  type GenSettings,
+  type GeneratePayload,
 } from "./types";
 import { Dropdown } from "./Dropdown";
 import { AiStudioPanel } from "./AiStudioPanel";
-import { ComingSoonPanel } from "./ComingSoonPanel";
+import { ReplicaPanel } from "./ReplicaPanel";
+import { ElementSwapPanel } from "./ElementSwapPanel";
+import { DubbingPanel } from "./DubbingPanel";
+import { DigitalHumanPanel } from "./DigitalHumanPanel";
 import { ResultsPanel } from "./ResultsPanel";
 
 const SEED_RESULTS: GenJob[] = [
   {
-    id: "seed_1",
+    id: "seed_audio_1",
+    type: "dubbing",
+    status: "succeeded",
+    kind: "audio",
+    durationSec: 27,
+    createdAt: "2026-05-31T02:22:15",
+  },
+  {
+    id: "seed_audio_2",
+    type: "dubbing",
+    status: "succeeded",
+    kind: "audio",
+    durationSec: 2,
+    createdAt: "2026-05-31T02:21:49",
+  },
+  {
+    id: "seed_video_1",
     type: "digital_human",
     status: "succeeded",
+    kind: "video",
     thumbnailUrl: "/illus_people.webp",
-    resultUrl: "/illus_people.webp",
     durationSec: 5,
     createdAt: "2026-05-30T23:25:44",
   },
@@ -36,25 +55,33 @@ export function MaterialStudio() {
 
   useEffect(() => {
     const map = pollers.current;
-    return () => {
-      Object.values(map).forEach(clearInterval);
-    };
+    return () => Object.values(map).forEach(clearInterval);
   }, []);
 
   const onGenerate = useCallback(
-    async (payload: { settings: GenSettings; imageName?: string }) => {
+    async (payload: GeneratePayload) => {
       const res = await fetch("/api/material/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ tab, ...payload }),
+        body: JSON.stringify({
+          tab,
+          settings: payload.settings,
+          source_url: payload.sourceUrl,
+          refs: payload.refs,
+          prompt: payload.prompt,
+          voice: payload.voice,
+          ip: payload.ip,
+        }),
       });
       const data = await res.json();
       if (!data?.ok) return;
 
+      const kind = tab === "dubbing" ? "audio" : "video";
       const job: GenJob = {
         ...data.job,
+        kind,
         thumbnailUrl: null,
-        durationSec: payload.settings.duration,
+        durationSec: payload.durationSec,
       };
       setResults((prev) => [job, ...prev]);
 
@@ -83,7 +110,6 @@ export function MaterialStudio() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* header: tabs + filters + view */}
       <div className="flex items-center justify-between gap-4 border-b border-border bg-surface/60 px-6">
         <div className="-mb-px flex items-center gap-1">
           {MATERIAL_TABS.map((t) => (
@@ -107,7 +133,7 @@ export function MaterialStudio() {
           <Dropdown
             label="类型:"
             value={typeFilter}
-            options={["全部", "图片", "视频"].map((v) => ({ value: v }))}
+            options={["全部", "图片", "视频", "音频"].map((v) => ({ value: v }))}
             onChange={setTypeFilter}
             align="end"
           />
@@ -146,16 +172,15 @@ export function MaterialStudio() {
         </div>
       </div>
 
-      {/* body */}
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto border-r border-border">
-          {tab === "ai_studio" ? (
-            <AiStudioPanel onGenerate={onGenerate} />
-          ) : (
-            <ComingSoonPanel tab={tab} />
-          )}
+        <div className="w-[540px] shrink-0 overflow-y-auto border-r border-border">
+          {tab === "ai_studio" && <AiStudioPanel onGenerate={onGenerate} />}
+          {tab === "replica" && <ReplicaPanel onGenerate={onGenerate} />}
+          {tab === "element_swap" && <ElementSwapPanel onGenerate={onGenerate} />}
+          {tab === "dubbing" && <DubbingPanel onGenerate={onGenerate} />}
+          {tab === "digital_human" && <DigitalHumanPanel onGenerate={onGenerate} />}
         </div>
-        <div className="w-[340px] shrink-0 overflow-y-auto xl:w-[400px]">
+        <div className="min-w-0 flex-1 overflow-y-auto">
           <ResultsPanel results={results} view={view} />
         </div>
       </div>
