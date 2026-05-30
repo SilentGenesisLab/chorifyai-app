@@ -178,6 +178,7 @@
   },
   "active": "a774d6864a35e222",
   "lastOpenFiles": [
+    "frontend/asset/reference/_tpl.png",
     "backend/reference/豆包2.0音色表~E2128.tmp",
     "backend/reference/~$豆包2.0音色表.xlsx",
     "backend/reference/豆包2.0音色表.xlsx",
@@ -188,7 +189,6 @@
     "backend/新建文件夹",
     "backend/app/services/__pycache__/__init__.cpython-310.pyc",
     "backend/app/services/__pycache__/oss.cpython-310.pyc",
-    "backend/app/services/__pycache__",
     "backend/README.md",
     "frontend/asset/reference/_decor2.png",
     "frontend/asset/reference/_fix.png",

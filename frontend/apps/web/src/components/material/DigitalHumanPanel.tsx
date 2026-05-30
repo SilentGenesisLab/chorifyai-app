@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { UserSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -9,6 +8,7 @@ import {
   type GenSettings,
   DEFAULT_SETTINGS,
   costOf,
+  tileGradient,
 } from "./types";
 import {
   Showcase,
@@ -20,10 +20,10 @@ import {
 } from "./shared";
 
 const IPS = [
-  { id: "ip_lijie", name: "李姐", src: "/illus_people.webp" },
-  { id: "ip_expert", name: "专家", src: "/illus_cosmetics.webp" },
-  { id: "ip_xiaohe", name: "小何", src: "/illus_gift.webp" },
-  { id: "ip_lab", name: "实验员", src: "/illus_river.webp" },
+  { id: "ip_lijie", name: "李姐" },
+  { id: "ip_expert", name: "专家" },
+  { id: "ip_xiaohe", name: "小何" },
+  { id: "ip_lab", name: "实验员" },
 ];
 
 export function DigitalHumanPanel({ onGenerate }: { onGenerate: GenerateFn }) {
@@ -68,8 +68,11 @@ export function DigitalHumanPanel({ onGenerate }: { onGenerate: GenerateFn }) {
         <div className="mt-5">
           {selected ? (
             <div className="ink-card flex items-center gap-3 p-3">
-              <div className="relative h-14 w-14 overflow-hidden rounded-lg">
-                <Image src={selected.src} alt="" fill sizes="56px" className="object-cover" />
+              <div
+                className="flex h-14 w-14 items-center justify-center rounded-lg font-display text-lg text-white"
+                style={{ backgroundImage: tileGradient(selected.id) }}
+              >
+                {selected.name.charAt(0)}
               </div>
               <div className="flex-1">
                 <p className="text-sm font-medium text-foreground">{selected.name}</p>
@@ -108,9 +111,10 @@ export function DigitalHumanPanel({ onGenerate }: { onGenerate: GenerateFn }) {
                     ip === p.id ? "border-brand" : "border-transparent",
                   )}
                 >
-                  <div className="relative aspect-[3/4]">
-                    <Image src={p.src} alt={p.name} fill sizes="80px" className="object-cover" />
-                  </div>
+                  <div
+                    className="aspect-[3/4]"
+                    style={{ backgroundImage: tileGradient(p.id) }}
+                  />
                   <span className="absolute inset-x-0 bottom-0 bg-black/45 py-0.5 text-center text-[11px] text-white">
                     {p.name}
                   </span>
