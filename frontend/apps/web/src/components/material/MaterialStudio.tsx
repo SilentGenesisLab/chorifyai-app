@@ -9,6 +9,9 @@ import {
   type GenJob,
   type GeneratePayload,
   type VoiceGeneratePayload,
+  type TranslatePayload,
+  type TranslateResult,
+  type ClonePayload,
 } from "./types";
 import { Dropdown } from "./Dropdown";
 import { AiStudioPanel } from "./AiStudioPanel";
@@ -145,6 +148,102 @@ export function MaterialStudio() {
     }
   }, []);
 
+  // 语音翻译：ASR + 翻译（可选用所选音色合成译文音频）。
+  // 返回 sourceText/text 供面板内联展示；选了音色才产出右侧音频卡。
+  const onTranslate = useCallback(
+    async (p: TranslatePayload): Promise<TranslateResult> => {
+      const id = p.speaker
+        ? `tr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+        : null;
+      if (id) {
+        const job: GenJob = {
+          id,
+          type: "dubbing",
+          status: "processing",
+          kind: "audio",
+          progress: 40,
+          createdAt: new Date().toISOString(),
+        };
+        setResults((prev) => [job, ...prev]);
+      }
+      try {
+        const res = await fetch("/api/voice/translate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            audio_url: p.audioUrl,
+            text: p.text,
+            source: p.source,
+            target: p.target,
+            speaker: p.speaker,
+          }),
+        });
+        const d = await res.json();
+        if (id) {
+          setResults((prev) =>
+            prev.map((j) =>
+              j.id === id
+                ? d.ok && d.url
+                  ? { ...j, status: "succeeded", progress: 100, resultUrl: d.url }
+                  : { ...j, status: "failed" }
+                : j,
+            ),
+          );
+        }
+        return d.ok
+          ? { ok: true, sourceText: d.sourceText, text: d.text, url: d.url }
+          : { ok: false };
+      } catch {
+        if (id)
+          setResults((prev) =>
+            prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
+          );
+        return { ok: false };
+      }
+    },
+    [],
+  );
+
+  // 语音克隆（VoxCPM）：参考音 + 文本 → 克隆音频卡。
+  const onClone = useCallback(async (p: ClonePayload) => {
+    const id = `cl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const job: GenJob = {
+      id,
+      type: "dubbing",
+      status: "processing",
+      kind: "audio",
+      progress: 30,
+      createdAt: new Date().toISOString(),
+    };
+    setResults((prev) => [job, ...prev]);
+    try {
+      const res = await fetch("/api/voice/clone", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: p.text,
+          reference_url: p.referenceUrl,
+          ultimate: p.ultimate,
+          prompt_text: p.promptText,
+        }),
+      });
+      const d = await res.json();
+      setResults((prev) =>
+        prev.map((j) =>
+          j.id === id
+            ? d.ok
+              ? { ...j, status: "succeeded", progress: 100, resultUrl: d.url }
+              : { ...j, status: "failed" }
+            : j,
+        ),
+      );
+    } catch {
+      setResults((prev) =>
+        prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
+      );
+    }
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-4 border-b border-border bg-surface/60 px-6">
@@ -214,7 +313,13 @@ export function MaterialStudio() {
           {tab === "ai_studio" && <AiStudioPanel onGenerate={onGenerate} />}
           {tab === "replica" && <ReplicaPanel onGenerate={onGenerate} />}
           {tab === "element_swap" && <ElementSwapPanel onGenerate={onGenerate} />}
-          {tab === "dubbing" && <DubbingPanel onVoiceGenerate={onVoiceGenerate} />}
+          {tab === "dubbing" && (
+            <DubbingPanel
+              onVoiceGenerate={onVoiceGenerate}
+              onTranslate={onTranslate}
+              onClone={onClone}
+            />
+          )}
           {tab === "digital_human" && <DigitalHumanPanel onGenerate={onGenerate} />}
         </div>
         <div className="min-w-0 flex-1 overflow-y-auto">

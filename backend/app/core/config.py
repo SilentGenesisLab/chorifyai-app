@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     doubao_asr_api_key: str = ""
     doubao_asr_resource_id: str = "volc.seedasr.auc"
 
+    # ---- Doubao LLM (火山方舟 Ark) — AI 写文案 / 文本翻译 ----
+    ark_api_key: str = ""
+    ark_endpoint: str = "https://ark.cn-beijing.volces.com/api/v3/responses"
+    ark_model: str = "doubao-seed-2-0-pro-260215"
+
+    # ---- VoxCPM 语音克隆（自建 GPU 服务，HTTP 调用）----
+    # 直连 voxcpm/server.py: http://127.0.0.1:8190
+    # 经 ailab 网关:        http://127.0.0.1:8089/tts/voxcpm
+    voxcpm_url: str = ""
+    voxcpm_timeout: int = 180
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

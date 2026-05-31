@@ -109,3 +109,34 @@ export type VoiceGeneratePayload = {
 };
 
 export type VoiceGenerateFn = (p: VoiceGeneratePayload) => Promise<void>;
+
+// AI 语音三种模式：文字转语音 / 语音翻译 / 语音克隆
+export type VoiceMode = "tts" | "translate" | "clone";
+
+export type Language = { code: string; name: string };
+
+// 翻译：音频(或文本) -> ASR/翻译 -> 可选用所选音色合成译文音频
+export type TranslatePayload = {
+  audioUrl?: string;
+  text?: string;
+  source: string;
+  target: string;
+  speaker?: string;
+  voiceName?: string;
+};
+export type TranslateResult = {
+  ok: boolean;
+  sourceText?: string;
+  text?: string;
+  url?: string | null;
+};
+export type TranslateFn = (p: TranslatePayload) => Promise<TranslateResult>;
+
+// 语音克隆（VoxCPM）：参考音 + 文本 -> 克隆音频
+export type ClonePayload = {
+  text: string;
+  referenceUrl: string;
+  ultimate?: boolean;
+  promptText?: string;
+};
+export type CloneFn = (p: ClonePayload) => Promise<void>;
