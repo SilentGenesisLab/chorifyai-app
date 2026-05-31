@@ -83,9 +83,15 @@ export function VideoSplitStudio() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url, method: m }),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || data.error || "拆分失败");
-        patch(id, { status: "done", clips: data.clips ?? [] });
+        // 后端异常可能返回纯文本（非 JSON），安全解析避免 "Unexpected token"。
+        let data: { detail?: string; error?: string; clips?: Clip[] } | null = null;
+        try {
+          data = await res.json();
+        } catch {
+          /* non-JSON body */
+        }
+        if (!res.ok) throw new Error(data?.detail || data?.error || `拆分失败（HTTP ${res.status}）`);
+        patch(id, { status: "done", clips: data?.clips ?? [] });
       } catch (e) {
         patch(id, { status: "error", error: e instanceof Error ? e.message : "拆分失败" });
       }

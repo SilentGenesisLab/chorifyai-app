@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -107,6 +108,18 @@ def _ffmpeg(args: list[str]) -> bool:
         return False
 
 
+def _put_retry(key: str, data: bytes, content_type: str, tries: int = 3) -> str:
+    """OSS 上传带重试 —— 抵御偶发的连接重置 (ConnectionResetError 10054)。"""
+    last: Exception | None = None
+    for attempt in range(tries):
+        try:
+            return put_object(key, data, content_type)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            time.sleep(0.6 * (attempt + 1))
+    raise last if last else RuntimeError("OSS upload failed")
+
+
 def _cut_and_upload(path: str, segments: list[tuple[float, float]], day: str) -> list[Clip]:
     clips: list[Clip] = []
     tmpdir = tempfile.mkdtemp()
@@ -119,21 +132,25 @@ def _cut_and_upload(path: str, segments: list[tuple[float, float]], day: str) ->
                 end=round(end, 2),
                 duration=round(dur, 2),
             )
+            # 单个切片的切割/上传失败不应让整次请求崩溃：失败则保留时间区间、跳过 url。
             if _HAS_FFMPEG and dur > 0.05:
                 base = uuid.uuid4().hex
                 out = os.path.join(tmpdir, f"{base}.mp4")
                 thumb = os.path.join(tmpdir, f"{base}.jpg")
-                if _ffmpeg(
-                    ["-ss", f"{start}", "-i", path, "-t", f"{dur}",
-                     "-c", "copy", "-avoid_negative_ts", "1", out]
-                ) and os.path.exists(out):
-                    with open(out, "rb") as f:
-                        clip.url = put_object(f"splits/{day}/{base}.mp4", f.read(), "video/mp4")
-                if _ffmpeg(
-                    ["-ss", f"{start + dur / 2}", "-i", path, "-frames:v", "1", "-q:v", "3", thumb]
-                ) and os.path.exists(thumb):
-                    with open(thumb, "rb") as f:
-                        clip.thumbnail = put_object(f"splits/{day}/{base}.jpg", f.read(), "image/jpeg")
+                try:
+                    if _ffmpeg(
+                        ["-ss", f"{start}", "-i", path, "-t", f"{dur}",
+                         "-c", "copy", "-avoid_negative_ts", "1", out]
+                    ) and os.path.exists(out):
+                        with open(out, "rb") as f:
+                            clip.url = _put_retry(f"splits/{day}/{base}.mp4", f.read(), "video/mp4")
+                    if _ffmpeg(
+                        ["-ss", f"{start + dur / 2}", "-i", path, "-frames:v", "1", "-q:v", "3", thumb]
+                    ) and os.path.exists(thumb):
+                        with open(thumb, "rb") as f:
+                            clip.thumbnail = _put_retry(f"splits/{day}/{base}.jpg", f.read(), "image/jpeg")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[split] 切片 {i + 1} 处理失败（已跳过 url）：{e}")
             clips.append(clip)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -144,35 +161,41 @@ def _cut_and_upload(path: str, segments: list[tuple[float, float]], day: str) ->
 def split(req: SplitRequest) -> SplitResponse:
     path = _download(req.url)
     try:
-        if req.method == "time":
-            segs = _time_segments(path, max(1.0, req.interval))
-        else:
-            # scene（默认）；speech 暂复用画面检测占位
-            try:
-                segs = _scene_segments(path, req.threshold)
-            except ImportError:
-                raise HTTPException(
-                    status_code=500,
-                    detail="后端未安装 scenedetect，请：pip install scenedetect opencv-python-headless",
-                )
-        if not segs:
-            raise HTTPException(status_code=422, detail="未能从该视频检测到可拆分片段")
-        segs = segs[: max(1, req.max_clips)]
+        try:
+            if req.method == "time":
+                segs = _time_segments(path, max(1.0, req.interval))
+            else:
+                # scene（默认）；speech 暂复用画面检测占位
+                try:
+                    segs = _scene_segments(path, req.threshold)
+                except ImportError:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="后端未安装 scenedetect，请：pip install scenedetect opencv-python-headless",
+                    )
+            if not segs:
+                raise HTTPException(status_code=422, detail="未能从该视频检测到可拆分片段")
+            segs = segs[: max(1, req.max_clips)]
 
-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
-        if req.make_clips:
-            clips = _cut_and_upload(path, segs, day)
-        else:
-            clips = [
-                Clip(index=i + 1, start=round(s, 2), end=round(e, 2), duration=round(e - s, 2))
-                for i, (s, e) in enumerate(segs)
-            ]
-        return SplitResponse(
-            method=req.method,
-            count=len(clips),
-            has_clips=any(c.url for c in clips),
-            clips=clips,
-        )
+            day = datetime.now(timezone.utc).strftime("%Y%m%d")
+            if req.make_clips:
+                clips = _cut_and_upload(path, segs, day)
+            else:
+                clips = [
+                    Clip(index=i + 1, start=round(s, 2), end=round(e, 2), duration=round(e - s, 2))
+                    for i, (s, e) in enumerate(segs)
+                ]
+            return SplitResponse(
+                method=req.method,
+                count=len(clips),
+                has_clips=any(c.url for c in clips),
+                clips=clips,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 —— 统一转成 JSON 错误，避免前端拿到纯文本 500
+            print(f"[split] 未处理异常：{e}")
+            raise HTTPException(status_code=502, detail=f"拆分处理失败：{e}")
     finally:
         try:
             os.remove(path)
