@@ -19,6 +19,11 @@ from app.services.oss import put_object
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
+# Connect direct to ByteDance (domestic) — ignore any HTTP(S)_PROXY env var,
+# which (e.g. a local VPN proxy) would corrupt the streamed TTS response.
+_session = requests.Session()
+_session.trust_env = False
+
 _DATA = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "voices.json"
 )
@@ -93,7 +98,7 @@ def tts(req: TTSRequest) -> dict:
     }
 
     try:
-        r = requests.post(
+        r = _session.post(
             settings.doubao_tts_url, headers=headers, json=body, stream=True, timeout=120
         )
     except requests.RequestException as e:
@@ -106,9 +111,11 @@ def tts(req: TTSRequest) -> dict:
 
     audio = bytearray()
     err: str | None = None
+    nlines = 0
     for raw in r.iter_lines():
         if not raw:
             continue
+        nlines += 1
         try:
             obj = json.loads(raw.decode("utf-8", "replace"))
         except json.JSONDecodeError:
@@ -117,14 +124,17 @@ def tts(req: TTSRequest) -> dict:
         if code not in (0, None):
             err = obj.get("message") or f"code {code}"
         d = obj.get("data")
-        if d:
+        if isinstance(d, str) and d:
             try:
                 audio += base64.b64decode(d)
             except Exception:
                 pass
 
     if not audio:
-        raise HTTPException(status_code=502, detail=f"TTS 无音频返回: {err or '未知错误'}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"TTS 无音频返回: {err or '未知'} (lines={nlines})",
+        )
 
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     key = f"tts/{day}/{uuid.uuid4().hex}.{req.format}"
@@ -166,7 +176,7 @@ def asr(req: ASRRequest) -> dict:
     }
 
     try:
-        r = requests.post(settings.doubao_asr_url, headers=headers, json=body, timeout=90)
+        r = _session.post(settings.doubao_asr_url, headers=headers, json=body, timeout=90)
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"ASR 请求失败: {e}")
 

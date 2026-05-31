@@ -53,12 +53,10 @@ export async function POST(req: Request) {
   await redis.set(`sms:code:${phone}`, code, "EX", 300);
   await redis.set(rateKey, "1", "EX", 60);
 
-  // In dev with the mock provider, surface the code so you can log in fast.
-  const devCode =
-    (process.env.SMS_PROVIDER ?? "mock") === "mock" &&
-    process.env.NODE_ENV !== "production"
-      ? code
-      : undefined;
+  // With the mock provider (no real SMS), surface the code so you can log in
+  // fast — including in local production (`next start`). Real providers
+  // (aliyun) never echo the code; it goes to the phone.
+  const devCode = (process.env.SMS_PROVIDER ?? "mock") === "mock" ? code : undefined;
 
   return NextResponse.json({ ok: true, devCode });
 }

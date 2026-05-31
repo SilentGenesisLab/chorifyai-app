@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight, Play } from "lucide-react";
 import { HERO } from "@/lib/marketing";
 import { SealBadge } from "@/components/decor/ink";
+import { LoginButton } from "@/components/auth/LoginModal";
 import { AssistantPanel } from "./AssistantPanel";
 
 export function Hero() {
@@ -30,13 +31,10 @@ export function Hero() {
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
-          <Link
-            href="/login"
-            className="brand-gradient inline-flex h-12 items-center gap-2 rounded-xl px-7 text-base font-medium text-white shadow-seal transition hover:opacity-95"
-          >
+          <LoginButton className="brand-gradient inline-flex h-12 items-center gap-2 rounded-xl px-7 text-base font-medium text-white shadow-seal transition hover:opacity-95">
             {HERO.primaryCta}
             <ArrowRight className="h-4 w-4" />
-          </Link>
+          </LoginButton>
           <Link
             href="#footer"
             className="inline-flex h-12 items-center gap-2 rounded-xl border border-border-strong bg-surface/70 px-6 text-base font-medium text-ink backdrop-blur transition-colors hover:bg-surface-muted"

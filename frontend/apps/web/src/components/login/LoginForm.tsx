@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export function LoginForm() {
+export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") || "/workspace";
@@ -80,15 +80,20 @@ export function LoginForm() {
           setError(data.error || "登录失败");
           return;
         }
-        router.replace(next);
-        router.refresh();
+        if (onSuccess) {
+          onSuccess();
+          router.refresh();
+        } else {
+          router.replace(next);
+          router.refresh();
+        }
       } catch {
         setError("网络错误，请重试");
       } finally {
         setLoading(false);
       }
     },
-    [phone, code, phoneValid, next, router],
+    [phone, code, phoneValid, next, router, onSuccess],
   );
 
   return (

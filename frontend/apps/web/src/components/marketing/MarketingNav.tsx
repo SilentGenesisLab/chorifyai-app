@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 import { BrandLockup } from "@/components/brand/SealLogo";
+import { LoginButton } from "@/components/auth/LoginModal";
 import { NAV_LINKS } from "@/lib/marketing";
 
 export function MarketingNav({ authed = false }: { authed?: boolean }) {
@@ -58,18 +59,12 @@ export function MarketingNav({ authed = false }: { authed?: boolean }) {
             </Link>
           ) : (
             <>
-              <Link
-                href="/login"
-                className="hidden h-9 items-center rounded-lg border border-border-strong px-4 text-sm font-medium text-ink transition-colors hover:bg-surface-muted sm:inline-flex"
-              >
+              <LoginButton className="hidden h-9 items-center rounded-lg border border-border-strong px-4 text-sm font-medium text-ink transition-colors hover:bg-surface-muted sm:inline-flex">
                 登录
-              </Link>
-              <Link
-                href="/login"
-                className="brand-gradient inline-flex h-9 items-center rounded-lg px-4 text-sm font-medium text-white shadow-seal transition hover:opacity-95"
-              >
+              </LoginButton>
+              <LoginButton className="brand-gradient inline-flex h-9 items-center rounded-lg px-4 text-sm font-medium text-white shadow-seal transition hover:opacity-95">
                 开始使用
-              </Link>
+              </LoginButton>
             </>
           )}
         </div>
