@@ -1,0 +1,7 @@
+# VoxCPM2 部署目录 —— 不要提交虚拟环境、模型权重和产物
+.venv/
+models/
+outputs/
+refs/
+*.log
+__pycache__/

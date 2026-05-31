@@ -47,3 +47,9 @@ Thumbs.db
 
 # ---- coverage ----
 coverage/
+
+# --out--
+*.mp4
+
+# --- model ---
+backend/aicenter/voxcpm/models

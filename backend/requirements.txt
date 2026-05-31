@@ -5,3 +5,6 @@ pydantic-settings>=2.6
 python-multipart>=0.0.12
 oss2>=2.18.0
 requests>=2.31
+# 视频拆分（按画面）：PySceneDetect + OpenCV。真实切片还需系统安装 ffmpeg。
+scenedetect>=0.6.4
+opencv-python-headless>=4.9
