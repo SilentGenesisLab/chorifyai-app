@@ -28,6 +28,7 @@ const nextConfig: NextConfig = {
       { source: "/api/upload", destination: `${base}/api/upload` },
       { source: "/api/upload/:path*", destination: `${base}/api/upload/:path*` },
       { source: "/api/material/:path*", destination: `${base}/api/material/:path*` },
+      { source: "/api/voice/:path*", destination: `${base}/api/voice/:path*` },
     ];
   },
 };
