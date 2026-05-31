@@ -48,7 +48,7 @@ export function TemplateCenter() {
                 key={c.title}
                 className="group ink-card overflow-hidden p-0 transition hover:-translate-y-1 hover:shadow-lg"
               >
-                <div className="relative aspect-[4/5] overflow-hidden bg-surface-muted">
+                <div className="relative aspect-[4/3] overflow-hidden bg-surface-muted">
                   <img
                     src={`/assets/ink/${TEMPLATE_IMG[i % TEMPLATE_IMG.length]}.webp`}
                     alt={c.title}
