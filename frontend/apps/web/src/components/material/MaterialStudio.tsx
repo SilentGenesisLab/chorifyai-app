@@ -8,6 +8,7 @@ import {
   type MaterialTab,
   type GenJob,
   type GeneratePayload,
+  type VoiceGeneratePayload,
 } from "./types";
 import { Dropdown } from "./Dropdown";
 import { AiStudioPanel } from "./AiStudioPanel";
@@ -108,6 +109,42 @@ export function MaterialStudio() {
     [tab],
   );
 
+  // Real Doubao TTS (synchronous) — backend assembles MP3 → OSS → public URL.
+  const onVoiceGenerate = useCallback(async (p: VoiceGeneratePayload) => {
+    const id = `tts_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const job: GenJob = {
+      id,
+      type: "dubbing",
+      status: "processing",
+      kind: "audio",
+      progress: 40,
+      durationSec: Math.max(2, Math.round(p.text.length * 0.24)),
+      createdAt: new Date().toISOString(),
+    };
+    setResults((prev) => [job, ...prev]);
+    try {
+      const res = await fetch("/api/voice/tts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: p.text, speaker: p.speaker, emotion: p.emotion }),
+      });
+      const data = await res.json();
+      setResults((prev) =>
+        prev.map((j) =>
+          j.id === id
+            ? data.ok
+              ? { ...j, status: "succeeded", progress: 100, resultUrl: data.url }
+              : { ...j, status: "failed" }
+            : j,
+        ),
+      );
+    } catch {
+      setResults((prev) =>
+        prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
+      );
+    }
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-4 border-b border-border bg-surface/60 px-6">
@@ -177,7 +214,7 @@ export function MaterialStudio() {
           {tab === "ai_studio" && <AiStudioPanel onGenerate={onGenerate} />}
           {tab === "replica" && <ReplicaPanel onGenerate={onGenerate} />}
           {tab === "element_swap" && <ElementSwapPanel onGenerate={onGenerate} />}
-          {tab === "dubbing" && <DubbingPanel onGenerate={onGenerate} />}
+          {tab === "dubbing" && <DubbingPanel onVoiceGenerate={onVoiceGenerate} />}
           {tab === "digital_human" && <DigitalHumanPanel onGenerate={onGenerate} />}
         </div>
         <div className="min-w-0 flex-1 overflow-y-auto">

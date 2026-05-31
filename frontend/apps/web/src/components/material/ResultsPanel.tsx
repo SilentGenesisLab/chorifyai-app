@@ -1,6 +1,7 @@
 "use client";
 
-import { Play, Loader2, Sparkles, Film } from "lucide-react";
+import { useRef, useState } from "react";
+import { Play, Pause, Loader2, Sparkles, Film } from "lucide-react";
 import { cn, formatDateTime, formatDuration } from "@/lib/utils";
 import { type GenJob, tileGradient } from "./types";
 
@@ -83,13 +84,29 @@ function VideoFace({ job }: { job: GenJob }) {
 
 function AudioFace({ job }: { job: GenJob }) {
   const processing = job.status === "processing";
+  const failed = job.status === "failed";
   const bars = waveHeights(job.id);
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  function toggle() {
+    if (!job.resultUrl) return;
+    if (!audioRef.current) {
+      audioRef.current = new Audio(job.resultUrl);
+      audioRef.current.onended = () => setPlaying(false);
+      audioRef.current.onpause = () => setPlaying(false);
+    }
+    if (playing) audioRef.current.pause();
+    else audioRef.current.play().then(() => setPlaying(true)).catch(() => {});
+  }
+
   return (
     <Face seed={job.id} soft>
       <div
         className={cn(
           "relative flex h-1/2 w-full items-center justify-center gap-[3px] px-3",
-          processing && "opacity-30",
+          (processing || failed) && "opacity-30",
+          playing && "animate-pulse",
         )}
       >
         {bars.map((b, i) => (
@@ -106,9 +123,26 @@ function AudioFace({ job }: { job: GenJob }) {
       </div>
       {processing ? (
         <Processing progress={job.progress} />
+      ) : failed ? (
+        <span className="absolute inset-0 flex items-center justify-center text-xs font-medium text-brand">
+          生成失败
+        </span>
       ) : (
         <>
-          <PlayBadge />
+          <button
+            type="button"
+            onClick={toggle}
+            className="absolute inset-0 flex items-center justify-center"
+            aria-label={playing ? "暂停" : "播放"}
+          >
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur transition hover:bg-black/55">
+              {playing ? (
+                <Pause className="h-5 w-5" fill="currentColor" />
+              ) : (
+                <Play className="h-5 w-5 translate-x-0.5" fill="currentColor" />
+              )}
+            </span>
+          </button>
           {job.durationSec != null && <DurationBadge sec={job.durationSec} />}
         </>
       )}

@@ -90,7 +90,8 @@ export function LoginModalProvider({ children }: { children: React.ReactNode }) 
               <LoginForm
                 onSuccess={() => {
                   setOpen(false);
-                  router.refresh();
+                  // 登录成功直接进工作台（cookie 已设，受保护路由可正常进入）
+                  router.replace("/workspace");
                 }}
               />
             </Suspense>

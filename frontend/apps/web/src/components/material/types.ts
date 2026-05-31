@@ -12,7 +12,7 @@ export const MATERIAL_TABS: { key: MaterialTab; label: string }[] = [
   { key: "ai_studio", label: "AI影棚" },
   { key: "replica", label: "AI复刻" },
   { key: "element_swap", label: "元素替换" },
-  { key: "dubbing", label: "AI配音" },
+  { key: "dubbing", label: "AI语音" },
   { key: "digital_human", label: "数字人" },
 ];
 
@@ -88,3 +88,24 @@ export type GeneratePayload = {
 };
 
 export type GenerateFn = (payload: GeneratePayload) => Promise<void>;
+
+// ---- AI 语音 (Doubao TTS/ASR) ----
+export type Voice = {
+  id: string;
+  name: string;
+  scene: string;
+  gender: string;
+  langDialect: string;
+  capabilities: string[];
+  tags: string[];
+  provider: string;
+};
+
+export type VoiceGeneratePayload = {
+  text: string;
+  speaker: string;
+  voiceName?: string;
+  emotion?: string;
+};
+
+export type VoiceGenerateFn = (p: VoiceGeneratePayload) => Promise<void>;

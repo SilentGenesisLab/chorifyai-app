@@ -82,7 +82,6 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
         }
         if (onSuccess) {
           onSuccess();
-          router.refresh();
         } else {
           router.replace(next);
           router.refresh();
