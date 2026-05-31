@@ -7,12 +7,31 @@ import {
   MATERIAL_TABS,
   type MaterialTab,
   type GenJob,
+  type ResultKind,
   type GeneratePayload,
   type VoiceGeneratePayload,
   type TranslatePayload,
   type TranslateResult,
   type ClonePayload,
 } from "./types";
+
+const MATERIAL_TAB_KEYS: MaterialTab[] = [
+  "ai_studio",
+  "replica",
+  "element_swap",
+  "dubbing",
+  "digital_human",
+];
+
+type PersistInput = {
+  module: string;
+  kind: ResultKind;
+  text?: string;
+  voiceName?: string;
+  resultUrl?: string | null;
+  thumbnailUrl?: string | null;
+  durationSec?: number | null;
+};
 import { Dropdown } from "./Dropdown";
 import { AiStudioPanel } from "./AiStudioPanel";
 import { ReplicaPanel } from "./ReplicaPanel";
@@ -21,38 +40,11 @@ import { DubbingPanel } from "./DubbingPanel";
 import { DigitalHumanPanel } from "./DigitalHumanPanel";
 import { ResultsPanel } from "./ResultsPanel";
 
-const SEED_RESULTS: GenJob[] = [
-  {
-    id: "seed_audio_1",
-    type: "dubbing",
-    status: "succeeded",
-    kind: "audio",
-    durationSec: 27,
-    createdAt: "2026-05-31T02:22:15",
-  },
-  {
-    id: "seed_audio_2",
-    type: "dubbing",
-    status: "succeeded",
-    kind: "audio",
-    durationSec: 2,
-    createdAt: "2026-05-31T02:21:49",
-  },
-  {
-    id: "seed_video_1",
-    type: "digital_human",
-    status: "succeeded",
-    kind: "video",
-    thumbnailUrl: "/illus_people.webp",
-    durationSec: 5,
-    createdAt: "2026-05-30T23:25:44",
-  },
-];
-
 export function MaterialStudio() {
   const [tab, setTab] = useState<MaterialTab>("ai_studio");
   const [view, setView] = useState<"grid" | "list">("grid");
-  const [results, setResults] = useState<GenJob[]>(SEED_RESULTS);
+  // 真实数据：进入页面从 PG 拉取历史生成回显（不再用 mock 种子）
+  const [results, setResults] = useState<GenJob[]>([]);
   const [typeFilter, setTypeFilter] = useState("全部");
   const [funcFilter, setFuncFilter] = useState("全部");
   const pollers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -60,6 +52,52 @@ export function MaterialStudio() {
   useEffect(() => {
     const map = pollers.current;
     return () => Object.values(map).forEach(clearInterval);
+  }, []);
+
+  // 进入素材生产：从 PG 拉取真实历史生成（/api/generations）回显到右侧列表
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/generations")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!alive || !d?.ok) return;
+        const mapped: GenJob[] = (d.generations ?? []).map(
+          (g: {
+            id: string;
+            type: string;
+            kind: string;
+            resultUrl?: string | null;
+            thumbnailUrl?: string | null;
+            durationSec?: number | null;
+            createdAt: string;
+          }) => ({
+            id: g.id,
+            type: (MATERIAL_TAB_KEYS.includes(g.type as MaterialTab)
+              ? g.type
+              : "dubbing") as MaterialTab,
+            status: "succeeded" as const,
+            kind: g.kind as ResultKind,
+            resultUrl: g.resultUrl,
+            thumbnailUrl: g.thumbnailUrl,
+            durationSec: g.durationSec ?? undefined,
+            createdAt: g.createdAt,
+          }),
+        );
+        setResults(mapped);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 持久化一条成功生成到 PG（失败静默，不阻塞前端展示）
+  const persistGen = useCallback((g: PersistInput) => {
+    fetch("/api/generations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(g),
+    }).catch(() => {});
   }, []);
 
   const onGenerate = useCallback(
@@ -141,12 +179,21 @@ export function MaterialStudio() {
             : j,
         ),
       );
+      if (data.ok)
+        persistGen({
+          module: "dubbing",
+          kind: "audio",
+          text: p.text,
+          voiceName: p.voiceName,
+          resultUrl: data.url,
+          durationSec: job.durationSec,
+        });
     } catch {
       setResults((prev) =>
         prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
       );
     }
-  }, []);
+  }, [persistGen]);
 
   // 语音翻译：ASR + 翻译（可选用所选音色合成译文音频）。
   // 返回 sourceText/text 供面板内联展示；选了音色才产出右侧音频卡。
@@ -190,6 +237,14 @@ export function MaterialStudio() {
             ),
           );
         }
+        if (id && d.ok && d.url)
+          persistGen({
+            module: "translate",
+            kind: "audio",
+            text: d.text,
+            voiceName: p.voiceName,
+            resultUrl: d.url,
+          });
         return d.ok
           ? { ok: true, sourceText: d.sourceText, text: d.text, url: d.url }
           : { ok: false };
@@ -201,7 +256,7 @@ export function MaterialStudio() {
         return { ok: false };
       }
     },
-    [],
+    [persistGen],
   );
 
   // 语音克隆（VoxCPM）：参考音 + 文本 → 克隆音频卡。
@@ -237,12 +292,19 @@ export function MaterialStudio() {
             : j,
         ),
       );
+      if (d.ok)
+        persistGen({
+          module: "clone",
+          kind: "audio",
+          text: p.text,
+          resultUrl: d.url,
+        });
     } catch {
       setResults((prev) =>
         prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
       );
     }
-  }, []);
+  }, [persistGen]);
 
   return (
     <div className="flex h-full flex-col">

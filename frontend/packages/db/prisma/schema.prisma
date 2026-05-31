@@ -75,6 +75,7 @@ model User {
   assets        Asset[]        @relation("AssetCreatedBy")
   folders       Folder[]       @relation("FolderCreatedBy")
   distributions Distribution[] @relation("DistributionCreatedBy")
+  generations   Generation[]   @relation("GenerationCreatedBy")
 
   @@map("users")
 }
@@ -92,6 +93,7 @@ model Organization {
   assets        Asset[]
   folders       Folder[]
   distributions Distribution[]
+  generations   Generation[]
 
   @@map("organizations")
 }
@@ -175,6 +177,28 @@ model Asset {
   @@index([orgId, type])
   @@index([folderId])
   @@map("assets")
+}
+
+// 素材生产产物（AI影棚 / AI语音 / 翻译 / 克隆 / 数字人…）
+// 只持久化成功且有可播放结果的生成，进入素材生产时按 org 查询回显。
+model Generation {
+  id           String   @id @default(cuid())
+  module       String // ai_studio | replica | element_swap | dubbing | translate | clone | digital_human
+  kind         String // audio | video | image
+  text         String? // 配音文本 / 提示词
+  voiceName    String?
+  resultUrl    String?
+  thumbnailUrl String?
+  durationSec  Int?
+  orgId        String
+  createdById  String
+  createdAt    DateTime @default(now())
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("GenerationCreatedBy", fields: [createdById], references: [id])
+
+  @@index([orgId, createdAt])
+  @@map("generations")
 }
 
 // 投放分发

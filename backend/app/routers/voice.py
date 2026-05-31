@@ -238,22 +238,37 @@ def asr(req: ASRRequest) -> dict:
 # ----------------------------------------------------------------------------
 class WriteRequest(BaseModel):
     prompt: str
+    # 给了 base_text 即「AI 改写」：按 prompt 修改原文；否则按 prompt 从零生成
+    base_text: str | None = None
     max_chars: int = 200
 
 
 @router.post("/write")
 def write(req: WriteRequest) -> dict:
     if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="请输入提示词")
+        raise HTTPException(status_code=400, detail="请输入描述")
     limit = max(20, min(req.max_chars, 500))
-    system = (
-        "你是资深短视频 / 广告配音文案写手。根据用户给的主题或需求，"
-        "写一段适合口播配音的中文文案：自然口语化、有节奏、有感染力。"
-        "直接输出文案正文，不要解释、不要标题、不要分点、不要加引号。"
-        f"长度控制在 {limit} 字以内。"
-    )
+    base = (req.base_text or "").strip()
+
+    if base:
+        system = (
+            "你是资深配音文案编辑。根据用户的【修改要求】改写【原文】，"
+            "只输出改写后的文案正文，不要解释、不要标题、不要分点、不要加引号。"
+            "尽量保持自然口语化、适合口播，长度与原文相近。"
+            f"不超过 {limit} 字。"
+        )
+        user = f"【原文】\n{base}\n\n【修改要求】\n{req.prompt.strip()}"
+    else:
+        system = (
+            "你是资深短视频 / 广告配音文案写手。根据用户给的主题或需求，"
+            "写一段适合口播配音的中文文案：自然口语化、有节奏、有感染力。"
+            "直接输出文案正文，不要解释、不要标题、不要分点、不要加引号。"
+            f"长度控制在 {limit} 字以内。"
+        )
+        user = req.prompt.strip()
+
     try:
-        text = ark.complete_text(req.prompt.strip(), system=system)
+        text = ark.complete_text(user, system=system)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"ok": True, "text": text}

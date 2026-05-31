@@ -77,21 +77,39 @@ export function VideoSplitStudio() {
   const runSplit = useCallback(
     async (id: string, url: string, m: Method) => {
       patch(id, { status: "splitting", error: undefined });
+      const safeJson = async (r: Response) => {
+        try {
+          return await r.json();
+        } catch {
+          return null;
+        }
+      };
       try {
+        // 1) 启动任务（请求很短，不会触发代理 30s 超时）
         const res = await fetch("/api/split", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url, method: m }),
         });
-        // 后端异常可能返回纯文本（非 JSON），安全解析避免 "Unexpected token"。
-        let data: { detail?: string; error?: string; clips?: Clip[] } | null = null;
-        try {
-          data = await res.json();
-        } catch {
-          /* non-JSON body */
+        const start = await safeJson(res);
+        if (!res.ok || !start?.job_id) {
+          throw new Error(start?.detail || start?.error || `启动拆分失败（HTTP ${res.status}）`);
         }
-        if (!res.ok) throw new Error(data?.detail || data?.error || `拆分失败（HTTP ${res.status}）`);
-        patch(id, { status: "done", clips: data?.clips ?? [] });
+        // 2) 轮询直到 done / failed（最多 ~6 分钟）
+        const jobId: string = start.job_id;
+        for (let i = 0; i < 240; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const pr = await fetch(`/api/split/${jobId}`);
+          const pj = await safeJson(pr);
+          if (!pr.ok) throw new Error(pj?.detail || pj?.error || `查询任务失败（HTTP ${pr.status}）`);
+          if (pj?.status === "done") {
+            patch(id, { status: "done", clips: pj.clips ?? [] });
+            return;
+          }
+          if (pj?.status === "failed") throw new Error(pj.error || "拆分失败");
+          // processing → 继续轮询
+        }
+        throw new Error("拆分超时，请重试");
       } catch (e) {
         patch(id, { status: "error", error: e instanceof Error ? e.message : "拆分失败" });
       }
