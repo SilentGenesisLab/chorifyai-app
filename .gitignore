@@ -5,6 +5,7 @@ node_modules/
 # ---- next.js / build ----
 .next/
 .next-preview/
+.next-prod/
 out/
 build/
 dist/
