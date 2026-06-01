@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { NAV } from "@/lib/nav";
 import { Logo } from "@/components/brand/Logo";
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { cn } from "@/lib/utils";
 
 const ICONS: Record<string, LucideIcon> = {
@@ -114,16 +115,19 @@ export function Sidebar({
           生机 Agent
         </button>
 
-        <button
-          type="button"
-          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-surface-muted"
-        >
-          <Bell className="h-[18px] w-[18px] text-muted" />
-          消息通知
-          <span className="ml-auto rounded-full bg-surface-muted px-1.5 text-xs text-muted">
-            0
-          </span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="flex flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-surface-muted"
+          >
+            <Bell className="h-[18px] w-[18px] text-muted" />
+            消息通知
+            <span className="ml-auto rounded-full bg-surface-muted px-1.5 text-xs text-muted">
+              0
+            </span>
+          </button>
+          <ThemeToggle up />
+        </div>
 
         <div className="relative">
           {menuOpen && (

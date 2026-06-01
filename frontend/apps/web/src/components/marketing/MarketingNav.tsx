@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 import { BrandLockup } from "@/components/brand/SealLogo";
 import { LoginButton } from "@/components/auth/LoginModal";
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { NAV_LINKS } from "@/lib/marketing";
 
 export function MarketingNav({ authed = false }: { authed?: boolean }) {
@@ -50,6 +51,7 @@ export function MarketingNav({ authed = false }: { authed?: boolean }) {
         </nav>
 
         <div className="flex items-center gap-2.5">
+          <ThemeToggle />
           {authed ? (
             <Link
               href="/workspace"

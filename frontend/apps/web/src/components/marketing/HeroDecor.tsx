@@ -7,7 +7,7 @@ export function HeroDecor() {
       <img
         src="/assets/ink/hero-bg.webp"
         alt=""
-        className="absolute inset-0 h-full w-full object-cover object-top opacity-95"
+        className="absolute inset-0 h-full w-full object-cover object-top opacity-95 dark:opacity-40"
       />
       {/* 左侧提亮（保证标题可读） */}
       <div

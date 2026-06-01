@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* 类选择器深色模式：<html class="dark"> 时生效（配合主题切换 + 跟随系统）。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ============================================================
    Chorify design system — 国风水墨 (ink-wash) theme
    Palette & type per brand sheet:
@@ -147,4 +150,48 @@
   .shadow-seal {
     box-shadow: 0 6px 18px -8px rgba(192, 57, 43, 0.5);
   }
+}
+
+/* ============================================================
+   深色主题 — 暖墨夜色（朱红主色不变，宣纸转暖夜底，墨转暖白）
+   unlayered，确保覆盖上面 @layer 里的 token 与工具类
+   ============================================================ */
+.dark {
+  --color-background: #14120e;
+  --color-surface: #1f1b15;
+  --color-surface-muted: #28231b;
+  --color-paper: #14120e;
+  --color-foreground: #ece6da;
+  --color-ink: #ece6da;
+  --color-muted: #8d8475;
+  --color-muted-foreground: #a99d8b;
+  --color-border: #342f28;
+  --color-border-strong: #47413a;
+  --color-brand: #d8503f;
+  --color-brand-foreground: #ffffff;
+  --color-brand-deep: #b53b2d;
+  --color-brand-soft: #3a201b;
+  --color-gold: #dca85c;
+  --color-jade: #50a795;
+  --color-azure: #7387ca;
+  --color-violet: #a787d2;
+  --color-stone: #8b8379;
+}
+.dark .paper-wash {
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 250, 238, 0.05) 0%, rgba(20, 18, 14, 0) 60%),
+    var(--color-paper);
+}
+.dark .paper-grid {
+  background-image:
+    linear-gradient(to right, rgba(236, 230, 218, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(236, 230, 218, 0.05) 1px, transparent 1px);
+}
+.dark .ink-card {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 12px 32px -18px rgba(0, 0, 0, 0.75);
+}
+.dark *::-webkit-scrollbar-thumb {
+  background: #3f392f;
 }

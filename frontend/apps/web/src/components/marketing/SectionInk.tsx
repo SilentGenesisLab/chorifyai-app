@@ -23,7 +23,7 @@ export function SectionInk({
         src="/assets/ink/hero-bg-sm.webp"
         alt=""
         loading="lazy"
-        className="h-full w-full object-cover"
+        className="h-full w-full object-cover dark:opacity-50"
         style={{ objectPosition: `center ${posY}` }}
       />
       <div
