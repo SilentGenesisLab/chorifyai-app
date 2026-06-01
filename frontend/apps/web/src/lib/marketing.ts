@@ -41,7 +41,7 @@ export const NAV_LINKS: NavLink[] = [
 
 export const HERO = {
   badge: "新一代 AI 内容创作与营销平台",
-  titleTop: "AI 智创，视频营销",
+  titleTop: "Chorify 让视频营销",
   titleBottom: "从此更简单",
   subtitle:
     "让 AI 成为你的创意伙伴，内容生产、营销分发、数据洞察一体化，助力企业高效打造爆款视频，实现生意增长。",
@@ -180,5 +180,5 @@ export const FOOTER = {
     email: "service@chorify.com",
   },
   copyright: "© 2026 Chorify. All Rights Reserved.",
-  icp: "粤ICP备2023123456号-1 · 粤公网安备 440300020012345号",
+  icp: "粤ICP备2023123456号-1·粤公网安备 440300020012345号",
 };
