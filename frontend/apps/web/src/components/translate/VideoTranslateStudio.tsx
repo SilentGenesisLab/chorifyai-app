@@ -365,18 +365,15 @@ function ToggleRow({
         type="button"
         disabled={disabled}
         onClick={() => onChange?.(!checked)}
-        aria-pressed={!!checked}
+        role="switch"
+        aria-checked={!!checked}
         className={cn(
-          "relative ml-auto h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed",
-          checked ? "bg-brand" : "bg-border-strong",
+          // 旋钮用 flex justify 定位（本项目 Tailwind v4 下 translate-x-*/transform 不生效）
+          "ml-auto inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors disabled:cursor-not-allowed",
+          checked ? "justify-end bg-brand" : "justify-start bg-border-strong",
         )}
       >
-        <span
-          className={cn(
-            "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-            checked ? "translate-x-[22px]" : "translate-x-0.5",
-          )}
-        />
+        <span className="h-5 w-5 rounded-full bg-white shadow" />
       </button>
     </div>
   );

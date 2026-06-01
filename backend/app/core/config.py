@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     aliyun_oss_access_key_secret: str = ""
     aliyun_oss_public_base_url: str = "https://oss3.sligenai.cn"
 
-    max_upload_mb: int = 60
+    max_upload_mb: int = 1024  # 视频上传上限（与前端「最大 1GB」一致）
 
     # ---- Doubao (ByteDance) speech ----
     doubao_tts_url: str = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"

@@ -33,6 +33,9 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // run on everything except auth API, next internals, and static files
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+  // Run on everything except auth API, the large-body upload proxy, next
+  // internals, and static files. `api/upload` is excluded so big videos stream
+  // straight through the rewrite to the backend — the middleware body-clone
+  // caps bodies (default 10MB) and breaks large uploads ("上传失败").
+  matcher: ["/((?!api/auth|api/upload|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };

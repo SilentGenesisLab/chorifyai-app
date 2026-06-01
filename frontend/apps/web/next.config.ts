@@ -6,6 +6,15 @@ const nextConfig: NextConfig = {
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
   // @chorify/db is published as TypeScript source — let Next transpile it.
   transpilePackages: ["@chorify/db"],
+  // Allow large video uploads through the middleware/proxy (default body clone
+  // limit is 10MB → big videos got truncated → "上传失败"). Headroom above the
+  // backend's 1GB cap for multipart overhead.
+  experimental: {
+    proxyClientMaxBodySize: 1200 * 1024 * 1024,
+    // Raise the rewrite-proxy timeout (default 30s) so large video uploads —
+    // dominated by the backend→OSS transfer — aren't cut off mid-upload.
+    proxyTimeout: 600_000,
+  },
   // Keep Node-only packages out of the bundle.
   serverExternalPackages: [
     "@prisma/client",
