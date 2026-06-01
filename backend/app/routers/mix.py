@@ -1,12 +1,10 @@
 """合成量产 — 智能混剪。把每个镜头分组随机抽到的一条片段按顺序拼成一条成片。
 
-流程：接收一组片段 URL（OSS）→ 逐条归一化(缩放/补边到目标分辨率 + 统一帧率/音频)
-→ concat 拼接 → 上传 OSS → 返回成片 URL。异步 job + 轮询（同 split）。
-
-稳健性：
-- 全局信号量限制并发 ffmpeg（避免一次合成多条时 CPU/IO 争用导致部分失败）
-- 下载带重试（抵御 OSS/CDN 偶发连接重置）
-- 捕获 ffmpeg stderr，失败时回传具体原因
+性能关键（随机组合场景：少量素材、大量组合）：
+- 归一化结果按 (url,分辨率) 缓存：同一片段只下载+转码一次，所有组合复用 → 不再每条成片都重转
+- 有 NVIDIA 显卡时用 NVENC 硬件编码（4090 上 1080p 几乎实时）
+- 拼接走 concat copy（不重编码）→ 单条成片基本只剩“拼接”开销
+- 信号量限制并发转码，下载带重试，捕获 ffmpeg 错误
 真实拼接依赖系统安装 ffmpeg。
 """
 import os
@@ -30,10 +28,31 @@ router = APIRouter(prefix="/api/mix", tags=["mix"])
 _HAS_FFMPEG = shutil.which("ffmpeg") is not None
 _HAS_FFPROBE = shutil.which("ffprobe") is not None
 
-# 最多同时跑 2 条合成的重活（每条内部还会串行处理各片段），其余排队，避免争用失败
-_SEM = threading.Semaphore(2)
 
-# job_id -> {status: processing|done|failed, url?, error?}
+def _detect_nvenc() -> bool:
+    if not _HAS_FFMPEG:
+        return False
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=15
+        ).stdout
+        return "h264_nvenc" in out
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_HAS_NVENC = _detect_nvenc()
+
+# 同时转码的并发上限（NVENC 下可适当放宽）
+_SEM = threading.Semaphore(3 if _HAS_NVENC else 2)
+
+# 归一化结果缓存：cache_key -> 本地 mp4 路径；同片段同分辨率只转一次，多组合复用
+_NORM_DIR = tempfile.mkdtemp(prefix="mix_norm_")
+_norm_cache: dict[str, str] = {}
+_norm_locks: dict[str, threading.Lock] = {}
+_norm_guard = threading.Lock()
+
+# job_id -> {status, url?, thumbnailUrl?, error?}
 _JOBS: dict[str, dict] = {}
 
 
@@ -44,20 +63,18 @@ class MixRequest(BaseModel):
     name: str | None = None
 
 
-def _download(url: str, dst_dir: str, idx: int, tries: int = 3) -> str:
-    suffix = os.path.splitext(url.split("?")[0])[1] or ".mp4"
-    path = os.path.join(dst_dir, f"src_{idx}{suffix}")
+def _download(url: str, dst: str, tries: int = 3) -> str:
     last: Exception | None = None
     for attempt in range(tries):
         try:
             with requests.get(url, stream=True, timeout=180) as r:
                 r.raise_for_status()
-                with open(path, "wb") as f:
+                with open(dst, "wb") as f:
                     for chunk in r.iter_content(1 << 16):
                         if chunk:
                             f.write(chunk)
-            if os.path.getsize(path) > 0:
-                return path
+            if os.path.getsize(dst) > 0:
+                return dst
             last = RuntimeError("下载到空文件")
         except Exception as e:  # noqa: BLE001
             last = e
@@ -66,7 +83,6 @@ def _download(url: str, dst_dir: str, idx: int, tries: int = 3) -> str:
 
 
 def _ffmpeg(args: list[str], timeout: int = 600) -> tuple[bool, str]:
-    """运行 ffmpeg，返回 (是否成功, stderr 末尾片段)。"""
     try:
         p = subprocess.run(
             ["ffmpeg", "-y", *args], capture_output=True, text=True, timeout=timeout
@@ -100,8 +116,12 @@ def _normalize(src: str, dst: str, w: int, h: int) -> tuple[bool, str]:
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
     )
-    common = ["-vsync", "cfr", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-              "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart"]
+    if _HAS_NVENC:
+        vcodec = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
+    else:
+        vcodec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+    common = ["-vsync", "cfr", *vcodec, "-c:a", "aac", "-ar", "44100", "-ac", "2",
+              "-movflags", "+faststart"]
     if _has_audio(src):
         cmd = ["-i", src, "-vf", vf, "-map", "0:v:0", "-map", "0:a:0", *common, dst]
     else:
@@ -109,6 +129,32 @@ def _normalize(src: str, dst: str, w: int, h: int) -> tuple[bool, str]:
                "anullsrc=channel_layout=stereo:sample_rate=44100",
                "-vf", vf, "-map", "0:v:0", "-map", "1:a:0", "-shortest", *common, dst]
     return _ffmpeg(cmd)
+
+
+def _get_normalized(url: str, w: int, h: int) -> str:
+    """下载并归一化某片段，结果缓存复用（同 url+分辨率只做一次）。返回本地路径。"""
+    key = f"{url}|{w}x{h}"
+    with _norm_guard:
+        cached = _norm_cache.get(key)
+        if cached and os.path.exists(cached):
+            return cached
+        lock = _norm_locks.setdefault(key, threading.Lock())
+    with lock:
+        cached = _norm_cache.get(key)
+        if cached and os.path.exists(cached):
+            return cached
+        tmp = tempfile.mkdtemp(dir=_NORM_DIR)
+        try:
+            suffix = os.path.splitext(url.split("?")[0])[1] or ".mp4"
+            src = _download(url, os.path.join(tmp, f"src{suffix}"))
+            out = os.path.join(_NORM_DIR, uuid.uuid4().hex + ".mp4")
+            ok, err = _normalize(src, out, w, h)
+            if not ok or not os.path.exists(out):
+                raise RuntimeError(f"片段处理失败：{err or '未知'}")
+            _norm_cache[key] = out
+            return out
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)  # 删源文件，保留归一化结果
 
 
 def _concat(parts: list[str], dst: str) -> tuple[bool, str]:
@@ -129,20 +175,14 @@ def _run_mix(job_id: str, req: MixRequest) -> None:
     if not _HAS_FFMPEG:
         _JOBS[job_id] = {"status": "failed", "error": "服务器未安装 ffmpeg，无法合成"}
         return
-    with _SEM:  # 限制并发重活
+    with _SEM:
         work = tempfile.mkdtemp(prefix="mix_")
         try:
-            norm_parts: list[str] = []
-            for i, url in enumerate(req.clips):
-                src = _download(url, work, i)
-                out = os.path.join(work, f"n_{i}.mp4")
-                ok, err = _normalize(src, out, req.width, req.height)
-                if not ok or not os.path.exists(out):
-                    raise RuntimeError(f"第 {i + 1} 段处理失败：{err or '未知'}")
-                norm_parts.append(out)
+            # 归一化（带缓存）：第 N 条成片若用到已转过的片段则秒取
+            parts = [_get_normalized(url, req.width, req.height) for url in req.clips]
 
             final = os.path.join(work, "final.mp4")
-            ok, err = _concat(norm_parts, final)
+            ok, err = _concat(parts, final)
             if not ok or not os.path.exists(final):
                 raise RuntimeError(f"拼接失败：{err or '未知'}")
 
