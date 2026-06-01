@@ -1,7 +1,8 @@
 /**
  * Seed demo data that mirrors the Kuaizi screenshots:
- * one organization + owner, recent projects, cloud-drive folders/assets,
- * and TikTok distributions. Idempotent (upsert by fixed id).
+ * one organization + owner, recent projects, and TikTok distributions.
+ * Idempotent (upsert by fixed id). The cloud drive is intentionally NOT seeded
+ * — it holds only real OSS uploads and is reset to empty on each seed.
  *
  * The demo org id is referenced by the login flow so freshly-logged-in
  * users join it and immediately see realistic data.
@@ -10,7 +11,6 @@ import {
   PrismaClient,
   ProjectType,
   ProjectStatus,
-  AssetType,
   Platform,
   Role,
   Plan,
@@ -52,6 +52,12 @@ async function main() {
   });
 
   const base = { orgId: org.id, createdById: user.id };
+
+  // ---- 云盘重置 ----
+  // The cloud drive holds ONLY real OSS uploads — no mock files/folders.
+  // Wipe any leftover drive rows so a freshly-seeded org starts with an empty drive.
+  await prisma.asset.deleteMany({ where: { orgId: org.id } });
+  await prisma.folder.deleteMany({ where: { orgId: org.id } });
 
   // ---- 最近工程 / 合成量产 ----
   const projects = [
@@ -116,48 +122,6 @@ async function main() {
     });
   }
 
-  // ---- 筷子云盘文件夹 ----
-  const folders = [
-    { id: "folder_test", name: "测试" },
-    { id: "folder_prostate", name: "前列腺" },
-    { id: "folder_edit", name: "剪辑" },
-  ];
-  for (const f of folders) {
-    await prisma.folder.upsert({
-      where: { id: f.id },
-      update: { name: f.name },
-      create: { id: f.id, name: f.name, ...base },
-    });
-  }
-
-  // ---- 筷子云盘文件 ----
-  const assets = [
-    { id: "asset_ai_8", name: "AI工程_8", type: AssetType.FINISHED, durationSec: 373 },
-    { id: "asset_ai_9", name: "AI工程_9", type: AssetType.FINISHED, durationSec: 410 },
-    { id: "asset_ai_18", name: "AI工程_18", type: AssetType.FINISHED, durationSec: 314 },
-    { id: "asset_ai_16", name: "AI工程_16", type: AssetType.FINISHED, durationSec: 383 },
-    { id: "asset_ai_20", name: "AI工程_20", type: AssetType.FINISHED, durationSec: 333 },
-    { id: "asset_0114_32", name: "0114-32", type: AssetType.VIDEO, durationSec: 12 },
-    { id: "asset_0114_31", name: "0114-31", type: AssetType.VIDEO, durationSec: 7 },
-    { id: "asset_1230_3", name: "12.30-3", type: AssetType.VIDEO, durationSec: 73, folderId: "folder_edit" },
-    { id: "asset_1230_21", name: "12.30-21", type: AssetType.VIDEO, durationSec: 111, folderId: "folder_prostate" },
-    { id: "asset_1230_2", name: "12.30-2", type: AssetType.VIDEO, durationSec: 77, folderId: "folder_prostate" },
-  ];
-  for (const a of assets) {
-    const data = {
-      ...base,
-      name: a.name,
-      type: a.type,
-      durationSec: a.durationSec,
-      folderId: a.folderId ?? null,
-    };
-    await prisma.asset.upsert({
-      where: { id: a.id },
-      update: data,
-      create: { id: a.id, ...data },
-    });
-  }
-
   // ---- 投放分发 ----
   const distributions = [
     { id: "dist_1", title: "ID123962-04混剪", accountCount: 3, videoCount: 29, publishDone: 29, publishTotal: 29, views: 8252, likes: 47, at: "2026-05-06T11:23:38" },
@@ -189,8 +153,8 @@ async function main() {
 
   console.log(
     `Seeded: org=${org.name}, user=${user.nickname}, ` +
-      `${projects.length} projects, ${folders.length} folders, ` +
-      `${assets.length} assets, ${distributions.length} distributions`,
+      `${projects.length} projects, ${distributions.length} distributions; ` +
+      `cloud drive reset to empty (real OSS uploads only)`,
   );
 }
 

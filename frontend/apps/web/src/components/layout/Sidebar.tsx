@@ -57,7 +57,7 @@ export function Sidebar({
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
-    router.replace("/login");
+    router.replace("/"); // 退出后回到主页（而非登录页）
     router.refresh();
   }
 

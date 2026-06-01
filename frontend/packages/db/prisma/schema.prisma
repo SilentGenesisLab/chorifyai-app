@@ -164,6 +164,9 @@ model Asset {
   url          String?
   thumbnailUrl String?
   durationSec  Int?
+  ossKey       String? // Aliyun OSS object key — needed to delete/sign the object
+  sizeBytes    Int? // file size in bytes — drives real storage usage
+  mimeType     String? // content-type captured at upload time
   folderId     String?
   orgId        String
   createdById  String

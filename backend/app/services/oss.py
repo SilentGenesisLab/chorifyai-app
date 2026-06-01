@@ -31,3 +31,16 @@ def put_object(key: str, data: bytes, content_type: str | None = None) -> str:
     headers = {"Content-Type": content_type} if content_type else None
     _bucket().put_object(key, data, headers=headers)
     return public_url(key)
+
+
+def delete_objects(keys: list[str]) -> list[str]:
+    """Delete one or more objects from OSS. Best-effort: returns the keys that
+    were issued for deletion. No-op (returns []) when not using real OSS."""
+    keys = [k for k in keys if k]
+    if not keys or settings.oss_provider != "aliyun":
+        return []
+    bucket = _bucket()
+    # batch_delete_objects handles up to 1000 keys per call.
+    for i in range(0, len(keys), 1000):
+        bucket.batch_delete_objects(keys[i : i + 1000])
+    return keys

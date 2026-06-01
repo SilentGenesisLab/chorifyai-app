@@ -4,9 +4,10 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from app.core.config import settings
-from app.services.oss import put_object
+from app.services.oss import delete_objects, put_object
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
@@ -52,3 +53,15 @@ async def upload(file: UploadFile = File(...), kind: str = Form("file")):
         "size": len(data),
         "contentType": file.content_type,
     }
+
+
+class DeleteBody(BaseModel):
+    keys: list[str]
+
+
+@router.post("/delete")
+async def delete(body: DeleteBody) -> dict:
+    """Remove objects from OSS (called server-side by the Next drive API when a
+    file is permanently deleted). Best-effort — never raises on missing keys."""
+    deleted = delete_objects(body.keys)
+    return {"ok": True, "deleted": deleted}

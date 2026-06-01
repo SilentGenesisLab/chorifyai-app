@@ -7,6 +7,7 @@ export interface UploadResult {
   kind: string;
   name: string;
   size: number;
+  contentType?: string | null;
 }
 
 /** Upload a file to the FastAPI backend (→ Aliyun OSS). Same-origin via Next rewrite. */
