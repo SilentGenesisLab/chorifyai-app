@@ -5,6 +5,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
+const USER_AGREEMENT_URL =
+  "https://yhai.sligenai.cn/silgene-protocolsv2/protocols/slientgene/ProductUserAgreement.html";
+const PRIVACY_URL =
+  "https://yhai.sligenai.cn/silgene-protocolsv2/protocols/slientgene/ProductPrivacyPolicy.html";
+
 export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
   const router = useRouter();
   const params = useSearchParams();
@@ -17,6 +22,7 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [devCode, setDevCode] = useState<string | null>(null);
+  const [agreed, setAgreed] = useState(false);
 
   useEffect(() => {
     if (countdown <= 0) return;
@@ -30,6 +36,10 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
     setError(null);
     if (!phoneValid) {
       setError("请输入正确的手机号");
+      return;
+    }
+    if (!agreed) {
+      setError("请先阅读并勾选同意《用户协议》和《隐私协议》");
       return;
     }
     setSending(true);
@@ -54,7 +64,7 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
     } finally {
       setSending(false);
     }
-  }, [phone, phoneValid]);
+  }, [phone, phoneValid, agreed]);
 
   const submit = useCallback(
     async (e?: React.FormEvent) => {
@@ -66,6 +76,10 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
       }
       if (!/^\d{6}$/.test(code)) {
         setError("请输入 6 位验证码");
+        return;
+      }
+      if (!agreed) {
+        setError("请先阅读并勾选同意《用户协议》和《隐私协议》");
         return;
       }
       setLoading(true);
@@ -92,7 +106,7 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
         setLoading(false);
       }
     },
-    [phone, code, phoneValid, next, router, onSuccess],
+    [phone, code, phoneValid, next, router, onSuccess, agreed],
   );
 
   return (
@@ -143,9 +157,36 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void } = {}) {
         {loading ? "登录中…" : "登录 / 注册"}
       </Button>
 
-      <p className="mt-1 text-center text-xs text-muted">
-        未注册的手机号将自动创建账号
-      </p>
+      <label className="mt-1 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={agreed}
+          onChange={(e) => setAgreed(e.target.checked)}
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-brand"
+        />
+        <span>
+          我已阅读并同意
+          <a
+            href={USER_AGREEMENT_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="text-brand hover:underline"
+          >
+            《用户协议》
+          </a>
+          和
+          <a
+            href={PRIVACY_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="text-brand hover:underline"
+          >
+            《隐私协议》
+          </a>
+        </span>
+      </label>
+
+      <p className="text-center text-xs text-muted">未注册的手机号将自动创建账号</p>
     </form>
   );
 }
