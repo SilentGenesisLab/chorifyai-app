@@ -31,6 +31,8 @@ const nextConfig: NextConfig = {
       { source: "/api/voice/:path*", destination: `${base}/api/voice/:path*` },
       { source: "/api/split", destination: `${base}/api/split` },
       { source: "/api/split/:path*", destination: `${base}/api/split/:path*` },
+      { source: "/api/mix", destination: `${base}/api/mix` },
+      { source: "/api/mix/:path*", destination: `${base}/api/mix/:path*` },
     ];
   },
 };

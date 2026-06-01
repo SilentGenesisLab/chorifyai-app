@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.routers import material, split, upload, voice
+from app.routers import material, mix, split, upload, voice
 
 app = FastAPI(title="Chorify Backend", version="0.1.0")
 
@@ -18,6 +18,7 @@ app.include_router(upload.router)
 app.include_router(material.router)
 app.include_router(voice.router)
 app.include_router(split.router)
+app.include_router(mix.router)
 
 
 @app.get("/health")
