@@ -259,52 +259,73 @@ export function MaterialStudio() {
     [persistGen],
   );
 
-  // 语音克隆（VoxCPM）：参考音 + 文本 → 克隆音频卡。
-  const onClone = useCallback(async (p: ClonePayload) => {
-    const id = `cl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const job: GenJob = {
-      id,
-      type: "dubbing",
-      status: "processing",
-      kind: "audio",
-      progress: 30,
-      createdAt: new Date().toISOString(),
-    };
-    setResults((prev) => [job, ...prev]);
-    try {
-      const res = await fetch("/api/voice/clone", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          text: p.text,
-          reference_url: p.referenceUrl,
-          ultimate: p.ultimate,
-          prompt_text: p.promptText,
-        }),
-      });
-      const d = await res.json();
-      setResults((prev) =>
-        prev.map((j) =>
-          j.id === id
-            ? d.ok
-              ? { ...j, status: "succeeded", progress: 100, resultUrl: d.url }
-              : { ...j, status: "failed" }
-            : j,
-        ),
-      );
-      if (d.ok)
-        persistGen({
-          module: "clone",
-          kind: "audio",
-          text: p.text,
-          resultUrl: d.url,
+  // 语音克隆（VoxCPM，异步）：POST 启动拿 job_id → 轮询状态
+  // （voxcpm 扩散推理 10–60s，长请求会被 Next 代理 30s 超时，必须走异步）。
+  const onClone = useCallback(
+    async (p: ClonePayload) => {
+      const id = `cl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const job: GenJob = {
+        id,
+        type: "dubbing",
+        status: "processing",
+        kind: "audio",
+        progress: 20,
+        createdAt: new Date().toISOString(),
+      };
+      setResults((prev) => [job, ...prev]);
+      const fail = () =>
+        setResults((prev) =>
+          prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
+        );
+      try {
+        const res = await fetch("/api/voice/clone", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            text: p.text,
+            reference_url: p.referenceUrl,
+            ultimate: p.ultimate,
+            prompt_text: p.promptText,
+          }),
         });
-    } catch {
-      setResults((prev) =>
-        prev.map((j) => (j.id === id ? { ...j, status: "failed" } : j)),
-      );
-    }
-  }, [persistGen]);
+        const d = await res.json();
+        if (!res.ok || !d.job_id) {
+          fail();
+          return;
+        }
+        const jobId: string = d.job_id;
+        const tick = async () => {
+          try {
+            const r = await fetch(`/api/voice/clone/${jobId}`);
+            const s = await r.json();
+            if (s.status === "done") {
+              setResults((prev) =>
+                prev.map((j) =>
+                  j.id === id
+                    ? { ...j, status: "succeeded", progress: 100, resultUrl: s.url }
+                    : j,
+                ),
+              );
+              persistGen({ module: "clone", kind: "audio", text: p.text, resultUrl: s.url });
+              clearInterval(pollers.current[id]);
+              delete pollers.current[id];
+            } else if (s.status === "failed") {
+              fail();
+              clearInterval(pollers.current[id]);
+              delete pollers.current[id];
+            }
+          } catch {
+            /* keep polling */
+          }
+        };
+        pollers.current[id] = setInterval(tick, 1500);
+        tick();
+      } catch {
+        fail();
+      }
+    },
+    [persistGen],
+  );
 
   return (
     <div className="flex h-full flex-col">

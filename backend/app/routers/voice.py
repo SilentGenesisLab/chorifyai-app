@@ -12,6 +12,7 @@
 import base64
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -334,6 +335,35 @@ class CloneRequest(BaseModel):
     uid: str = "chorify"
 
 
+# 克隆任务存储（内存，单进程 uvicorn 足够）：job_id -> {status, url?, error?}
+_CLONE_JOBS: dict[str, dict] = {}
+
+
+def _run_clone(
+    job_id: str,
+    text: str,
+    reference_url: str,
+    prompt_text: str | None,
+    cfg_value: float,
+    timesteps: int,
+) -> None:
+    """后台线程执行克隆。voxcpm 扩散推理 ~10–60s，放后台避免被代理 30s 超时。"""
+    try:
+        wav = voxcpm.clone(
+            text,
+            reference_url,
+            prompt_text=prompt_text,
+            cfg_value=cfg_value,
+            inference_timesteps=timesteps,
+        )
+        url, key = _put_audio(wav, "wav", prefix="clone")
+        _CLONE_JOBS[job_id] = {"status": "done", "url": url, "key": key, "bytes": len(wav)}
+    except HTTPException as e:
+        _CLONE_JOBS[job_id] = {"status": "failed", "error": str(e.detail)}
+    except Exception as e:  # noqa: BLE001
+        _CLONE_JOBS[job_id] = {"status": "failed", "error": str(e)}
+
+
 @router.get("/clone/health")
 def clone_health() -> dict:
     return {"ok": True, **voxcpm.health()}
@@ -341,6 +371,7 @@ def clone_health() -> dict:
 
 @router.post("/clone")
 def clone(req: CloneRequest) -> dict:
+    """启动克隆任务，立即返回 job_id（请求很短，不触发代理超时）。"""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="请输入要克隆的目标文本")
     if not (req.reference_url or "").strip():
@@ -356,16 +387,27 @@ def clone(req: CloneRequest) -> dict:
                 status_code=400, detail="终极克隆需要参考音的精确文本转写"
             )
 
-    try:
-        wav = voxcpm.clone(
+    job_id = uuid.uuid4().hex
+    _CLONE_JOBS[job_id] = {"status": "processing"}
+    threading.Thread(
+        target=_run_clone,
+        args=(
+            job_id,
             req.text.strip(),
             req.reference_url.strip(),
-            prompt_text=prompt_text,
-            cfg_value=req.cfg_value,
-            inference_timesteps=req.inference_timesteps,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+            prompt_text,
+            req.cfg_value,
+            req.inference_timesteps,
+        ),
+        daemon=True,
+    ).start()
+    return {"ok": True, "job_id": job_id, "status": "processing"}
 
-    url, key = _put_audio(wav, "wav", prefix="clone")
-    return {"ok": True, "url": url, "key": key, "bytes": len(wav)}
+
+@router.get("/clone/{job_id}")
+def clone_status(job_id: str) -> dict:
+    """轮询克隆任务状态/结果。"""
+    job = _CLONE_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return {"ok": job.get("status") == "done", **job}
