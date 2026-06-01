@@ -33,6 +33,8 @@ const nextConfig: NextConfig = {
       { source: "/api/split/:path*", destination: `${base}/api/split/:path*` },
       { source: "/api/mix", destination: `${base}/api/mix` },
       { source: "/api/mix/:path*", destination: `${base}/api/mix/:path*` },
+      { source: "/api/translate", destination: `${base}/api/translate` },
+      { source: "/api/translate/:path*", destination: `${base}/api/translate/:path*` },
     ];
   },
 };
