@@ -7,18 +7,12 @@ const SOCIAL = [MessageCircle, Video, Globe, Send];
 export function MarketingFooter() {
   return (
     <footer id="footer" className="relative overflow-hidden border-t border-border bg-paper pt-2">
-      {/* 底部远山薄雾 + 江上一叶 */}
+      {/* 底部远山薄雾 */}
       <img
         src="/assets/ink/divider.webp"
         alt=""
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-28 w-full object-cover opacity-40 mix-blend-multiply"
-      />
-      <img
-        src="/assets/ink/boat.webp"
-        alt=""
-        aria-hidden
-        className="pointer-events-none absolute bottom-3 left-[3%] w-20 opacity-55 mix-blend-multiply"
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-24 w-full object-cover opacity-30 mix-blend-multiply"
       />
 
       <div className="relative mx-auto max-w-7xl px-6 py-14">
@@ -81,10 +75,17 @@ export function MarketingFooter() {
 
         <div className="ink-rule my-9" />
 
-        <div className="flex flex-col items-center justify-center gap-1 text-center text-xs text-muted sm:flex-row sm:gap-3">
-          <span>{FOOTER.copyright}</span>
-          <span aria-hidden className="hidden sm:inline">·</span>
-          <span>{FOOTER.icp}</span>
+        <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 text-xs text-muted">
+          {[FOOTER.copyright, ...FOOTER.icp.split(/\s*·\s*/)].flatMap((part, i) =>
+            i === 0
+              ? [<span key={i}>{part}</span>]
+              : [
+                  <span key={`sep-${i}`} aria-hidden className="text-muted/40">
+                    ·
+                  </span>,
+                  <span key={i}>{part}</span>,
+                ],
+          )}
         </div>
       </div>
     </footer>
