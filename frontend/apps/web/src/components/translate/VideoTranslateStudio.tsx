@@ -14,6 +14,8 @@ import {
   RotateCcw,
   AlertCircle,
   Sparkles,
+  Check,
+  ChevronDown,
 } from "lucide-react";
 import { uploadFile } from "@/lib/upload";
 import { cn } from "@/lib/utils";
@@ -23,7 +25,12 @@ type Status = "uploading" | "processing" | "done" | "error";
 type Task = {
   id: string;
   name: string;
-  videoUrl: string; // 原视频（处理中作占位预览）
+  videoUrl: string; // 处理中作占位预览（本地 blob → 上传后换 OSS url）
+  srcUrl?: string; // 已上传的 OSS 源视频（多语言共用，retry 复用）
+  file?: File; // 上传失败时重试用
+  source: string; // code
+  target: string; // code
+  genSub: boolean;
   sourceLabel: string;
   targetLabel: string;
   status: Status;
@@ -58,15 +65,21 @@ const nowLabel = () => {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
+const safeJson = async (r: Response) => {
+  try {
+    return await r.json();
+  } catch {
+    return null;
+  }
+};
 
 export function VideoTranslateStudio() {
   const [langs, setLangs] = useState<Lang[]>(LANG_FALLBACK);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [source, setSource] = useState("auto");
-  const [target, setTarget] = useState("");
+  const [targets, setTargets] = useState<string[]>([]);
   const [genSub, setGenSub] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -77,7 +90,6 @@ export function VideoTranslateStudio() {
       .catch(() => {});
   }, []);
 
-  // 释放本地预览 URL
   useEffect(() => () => void (previewUrl && URL.revokeObjectURL(previewUrl)), [previewUrl]);
 
   const langName = (code: string) => langs.find((l) => l.code === code)?.name ?? code;
@@ -93,72 +105,112 @@ export function VideoTranslateStudio() {
   const patch = (id: string, p: Partial<Task>) =>
     setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, ...p } : t)));
 
-  const safeJson = async (r: Response) => {
-    try {
-      return await r.json();
-    } catch {
-      return null;
-    }
-  };
-
-  const generate = useCallback(async () => {
-    if (!file || !target || busy) return;
-    setBusy(true);
-    const id = uid();
-    const task: Task = {
-      id,
-      name: file.name,
-      videoUrl: previewUrl,
-      sourceLabel: langName(source),
-      targetLabel: langName(target),
-      status: "uploading",
-      stage: "上传视频",
-      createdAt: nowLabel(),
-      progress: { done: 0, total: 0 },
-    };
-    setTasks((ts) => [task, ...ts]);
-    try {
-      const up = await uploadFile(file, "video");
-      patch(id, { videoUrl: up.url, status: "processing", stage: "排队中" });
-
-      const res = await fetch("/api/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: up.url,
-          source,
-          target,
-          keep_bgm: true,
-          generate_subtitles: genSub,
-        }),
-      });
-      const start = await safeJson(res);
-      if (!res.ok || !start?.job_id) {
-        throw new Error(start?.detail || start?.error || `启动失败（HTTP ${res.status}）`);
-      }
-      const jobId: string = start.job_id;
-      // 轮询（深度克隆较慢，最多 ~15 min）
-      for (let i = 0; i < 450; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const pr = await fetch(`/api/translate/${jobId}`);
-        const pj = await safeJson(pr);
-        if (!pr.ok) throw new Error(pj?.detail || pj?.error || `查询失败（HTTP ${pr.status}）`);
-        if (pj?.status === "done") {
-          patch(id, { status: "done", stage: "完成", resultUrl: pj.url });
-          return;
+  // 启动一个翻译任务并独立轮询（不阻塞表单 / 其它任务）。深度克隆较慢，最多 ~15min。
+  const startAndPoll = useCallback(
+    async (id: string, url: string, src: string, tgt: string, gs: boolean) => {
+      patch(id, { status: "processing", stage: "排队中", error: undefined });
+      try {
+        const res = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, source: src, target: tgt, keep_bgm: true, generate_subtitles: gs }),
+        });
+        const start = await safeJson(res);
+        if (!res.ok || !start?.job_id) {
+          throw new Error(start?.detail || start?.error || `启动失败（HTTP ${res.status}）`);
         }
-        if (pj?.status === "failed") throw new Error(pj.error || "翻译失败");
-        patch(id, { stage: pj?.stage, progress: pj?.progress });
+        const jobId: string = start.job_id;
+        for (let i = 0; i < 450; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const pr = await fetch(`/api/translate/${jobId}`);
+          const pj = await safeJson(pr);
+          if (!pr.ok) throw new Error(pj?.detail || pj?.error || `查询失败（HTTP ${pr.status}）`);
+          if (pj?.status === "done") {
+            patch(id, { status: "done", stage: "完成", resultUrl: pj.url });
+            return;
+          }
+          if (pj?.status === "failed") throw new Error(pj.error || "翻译失败");
+          patch(id, { stage: pj?.stage, progress: pj?.progress });
+        }
+        throw new Error("处理超时，请重试");
+      } catch (e) {
+        patch(id, { status: "error", error: e instanceof Error ? e.message : "翻译失败" });
       }
-      throw new Error("处理超时，请重试");
-    } catch (e) {
-      patch(id, { status: "error", error: e instanceof Error ? e.message : "翻译失败" });
-    } finally {
-      setBusy(false);
-    }
-  }, [file, target, source, genSub, busy, previewUrl, langs]);
+    },
+    [],
+  );
 
-  const canGenerate = !!file && !!target && !busy;
+  // 点击生成：为每个目标语言建一张任务卡（立即出现并转圈），共用一次上传，
+  // 之后各任务各自启动 + 轮询。整个过程异步，不锁表单。
+  const generate = useCallback(() => {
+    if (!file || targets.length === 0) return;
+    const f = file;
+    const src = source;
+    const gs = genSub;
+    const pv = previewUrl;
+    const items = targets.map((tgt) => ({ id: uid(), tgt }));
+
+    setTasks((ts) => [
+      ...items.map(
+        (it): Task => ({
+          id: it.id,
+          name: f.name,
+          videoUrl: pv,
+          file: f,
+          source: src,
+          target: it.tgt,
+          genSub: gs,
+          sourceLabel: langName(src),
+          targetLabel: langName(it.tgt),
+          status: "uploading",
+          stage: "上传视频",
+          createdAt: nowLabel(),
+          progress: { done: 0, total: 0 },
+        }),
+      ),
+      ...ts,
+    ]);
+
+    void (async () => {
+      let url: string;
+      try {
+        url = (await uploadFile(f, "video")).url;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "上传失败";
+        items.forEach((it) => patch(it.id, { status: "error", error: msg }));
+        return;
+      }
+      items.forEach((it) => {
+        patch(it.id, { srcUrl: url, videoUrl: url });
+        void startAndPoll(it.id, url, src, it.tgt, gs);
+      });
+    })();
+  }, [file, targets, source, genSub, previewUrl, langs, startAndPoll]);
+
+  // 单卡重试：已上传过则直接重跑翻译，否则先重新上传。
+  const retryTask = useCallback(
+    (t: Task) => {
+      if (t.srcUrl) {
+        void startAndPoll(t.id, t.srcUrl, t.source, t.target, t.genSub);
+        return;
+      }
+      if (t.file) {
+        patch(t.id, { status: "uploading", stage: "上传视频", error: undefined });
+        void (async () => {
+          try {
+            const url = (await uploadFile(t.file as File, "video")).url;
+            patch(t.id, { srcUrl: url, videoUrl: url });
+            void startAndPoll(t.id, url, t.source, t.target, t.genSub);
+          } catch (e) {
+            patch(t.id, { status: "error", error: e instanceof Error ? e.message : "上传失败" });
+          }
+        })();
+      }
+    },
+    [startAndPoll],
+  );
+
+  const canGenerate = !!file && targets.length > 0;
 
   return (
     <div className="flex h-full min-h-full flex-col gap-6 overflow-y-auto p-6 lg:flex-row">
@@ -171,7 +223,6 @@ export function VideoTranslateStudio() {
           </p>
         </div>
 
-        {/* 上传区 */}
         <input
           ref={fileRef}
           type="file"
@@ -207,15 +258,18 @@ export function VideoTranslateStudio() {
           )}
         </button>
 
-        {/* 语言 */}
         <Field label="源语言" required>
           <LangSelect value={source} onChange={setSource} options={langs} placeholder="请选择" />
         </Field>
-        <Field label="目标语言" required>
-          <LangSelect value={target} onChange={setTarget} options={targetLangs} placeholder="请选择" />
+        <Field label="目标语言" required hint="可多选，一次生成多个语种">
+          <MultiLangSelect
+            values={targets}
+            onChange={setTargets}
+            options={targetLangs}
+            placeholder="请选择（可多选）"
+          />
         </Field>
 
-        {/* 选项 */}
         <div className="mt-5 space-y-2.5">
           <ToggleRow icon={Eraser} label="擦除原字幕" disabled hint="即将支持" />
           <ToggleRow
@@ -234,18 +288,17 @@ export function VideoTranslateStudio() {
           onClick={generate}
           className="brand-gradient mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-xl text-base font-medium text-white shadow-seal transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
-          {busy ? "处理中…" : "立即生成"}
+          <Sparkles className="h-5 w-5" />
+          立即生成
+          {targets.length > 1 && ` · ${targets.length} 种语言`}
         </button>
       </section>
 
       {/* ───── 右：任务列表 ───── */}
       <section className="min-w-0 flex-1">
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex items-baseline gap-2">
-            <h2 className="font-display text-lg font-bold text-ink">任务列表</h2>
-            <span className="text-xs text-muted">内容由 AI 生成</span>
-          </div>
+        <div className="mb-4 flex items-baseline gap-2">
+          <h2 className="font-display text-lg font-bold text-ink">任务列表</h2>
+          <span className="text-xs text-muted">内容由 AI 生成</span>
         </div>
 
         {tasks.length === 0 ? (
@@ -256,9 +309,9 @@ export function VideoTranslateStudio() {
             </p>
           </div>
         ) : (
-          <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
             {tasks.map((t) => (
-              <TaskRow key={t.id} task={t} onRetry={generate} />
+              <TaskCard key={t.id} task={t} onRetry={() => retryTask(t)} />
             ))}
           </div>
         )}
@@ -271,17 +324,20 @@ export function VideoTranslateStudio() {
 function Field({
   label,
   required,
+  hint,
   children,
 }: {
   label: string;
   required?: boolean;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="mt-5">
-      <label className="mb-1.5 block text-sm font-medium text-ink">
+      <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-ink">
         {label}
-        {required && <span className="ml-0.5 text-brand">*</span>}
+        {required && <span className="text-brand">*</span>}
+        {hint && <span className="text-xs font-normal text-muted">· {hint}</span>}
       </label>
       {children}
     </div>
@@ -318,15 +374,72 @@ function LangSelect({
           </option>
         ))}
       </select>
-      <svg
-        className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+    </div>
+  );
+}
+
+/** 目标语言多选：下拉勾选，已选以逗号串显示。 */
+function MultiLangSelect({
+  values,
+  onChange,
+  options,
+  placeholder,
+}: {
+  values: string[];
+  onChange: (v: string[]) => void;
+  options: Lang[];
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const toggle = (code: string) =>
+    onChange(values.includes(code) ? values.filter((c) => c !== code) : [...values, code]);
+  const label =
+    values.length === 0
+      ? placeholder
+      : options
+          .filter((o) => values.includes(o.code))
+          .map((o) => o.name)
+          .join("、");
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-border bg-surface px-3.5 text-left text-sm transition-colors hover:border-brand/40 focus:border-brand focus:outline-none"
       >
-        <path d="m6 9 6 6 6-6" />
-      </svg>
+        <span className={cn("truncate", values.length ? "text-ink" : "text-muted")}>{label}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
+          <div className="ink-card absolute z-50 mt-1.5 max-h-64 w-full overflow-y-auto p-1.5">
+            {options.map((o) => {
+              const on = values.includes(o.code);
+              return (
+                <button
+                  key={o.code}
+                  type="button"
+                  onClick={() => toggle(o.code)}
+                  className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-ink transition-colors hover:bg-surface-muted"
+                >
+                  <span
+                    className={cn(
+                      "flex h-4 w-4 items-center justify-center rounded border",
+                      on ? "border-brand bg-brand text-white" : "border-border-strong",
+                    )}
+                  >
+                    {on && <Check className="h-3 w-3" />}
+                  </span>
+                  {o.name}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -379,90 +492,82 @@ function ToggleRow({
   );
 }
 
-function TaskRow({ task, onRetry }: { task: Task; onRetry: () => void }) {
-  const processing = task.status === "uploading" || task.status === "processing";
+function TaskCard({ task, onRetry }: { task: Task; onRetry: () => void }) {
   const prog =
-    task.progress && task.progress.total > 1
-      ? `${task.progress.done}/${task.progress.total}`
-      : "";
+    task.progress && task.progress.total > 1 ? `${task.progress.done}/${task.progress.total}` : "";
   return (
-    <div>
-      <div className="mb-2 flex items-center gap-3">
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brand/10 text-brand">
-          <Languages className="h-4.5 w-4.5" />
+    <div className="overflow-hidden rounded-xl border border-border bg-black/80">
+      <div className="flex items-center gap-2 bg-surface px-2.5 py-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/10 text-brand">
+          <Languages className="h-4 w-4" />
         </span>
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-ink">{task.createdAt}</p>
-          <p className="truncate text-xs text-muted">
-            {task.name} ｜ 源语言：{task.sourceLabel}
-          </p>
+          <p className="truncate text-xs font-medium text-ink">{task.targetLabel}</p>
+          <p className="truncate text-[11px] text-muted">{task.createdAt}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 pl-12 sm:grid-cols-2 xl:grid-cols-3">
-        <div className="relative overflow-hidden rounded-xl border border-border bg-black/80">
-          <span className="absolute right-2 top-2 z-10 rounded bg-black/55 px-1.5 py-0.5 text-[11px] text-white">
-            {task.targetLabel}
-          </span>
-          <div className="relative aspect-[9/16] max-h-72 w-full">
-            {task.status === "done" && task.resultUrl ? (
-              // eslint-disable-next-line jsx-a11y/media-has-caption
-              <video src={task.resultUrl} controls className="h-full w-full bg-black object-contain" />
-            ) : task.status === "error" ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-                <AlertCircle className="h-7 w-7 text-rose-400" />
-                <p className="text-xs text-rose-300">{task.error ?? "翻译失败"}</p>
-                <button
-                  type="button"
-                  onClick={onRetry}
-                  className="mt-1 flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs text-white/85 transition hover:bg-white/10"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  重试
-                </button>
-              </div>
-            ) : (
-              <>
-                {task.videoUrl && (
-                  // eslint-disable-next-line jsx-a11y/media-has-caption
-                  <video
-                    src={task.videoUrl}
-                    className="h-full w-full object-contain opacity-40"
-                    muted
-                    preload="metadata"
-                  />
-                )}
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
-                  <Loader2 className="h-7 w-7 animate-spin text-white/90" />
-                  <p className="text-sm font-medium text-white">正在翻译</p>
-                  <p className="text-xs text-white/70">
-                    {task.stage ?? "处理中"}
-                    {prog && ` ${prog}`}
-                  </p>
-                </div>
-              </>
-            )}
+      <div className="relative aspect-[9/16] max-h-72 w-full">
+        <span className="absolute right-2 top-2 z-10 rounded bg-black/55 px-1.5 py-0.5 text-[11px] text-white">
+          {task.targetLabel}
+        </span>
+        {task.status === "done" && task.resultUrl ? (
+          // eslint-disable-next-line jsx-a11y/media-has-caption
+          <video src={task.resultUrl} controls className="h-full w-full bg-black object-contain" />
+        ) : task.status === "error" ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+            <AlertCircle className="h-7 w-7 text-rose-400" />
+            <p className="line-clamp-3 text-xs text-rose-300">{task.error ?? "翻译失败"}</p>
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-1 flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs text-white/85 transition hover:bg-white/10"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              重试
+            </button>
           </div>
-          {task.status === "done" && task.resultUrl && (
-            <div className="flex items-center justify-between px-3 py-2">
-              <span className="flex items-center gap-1 text-xs text-emerald-600">
-                <Play className="h-3.5 w-3.5" />
-                翻译完成
-              </span>
-              <a
-                href={task.resultUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-brand"
-                title="下载译制视频"
-              >
-                <Download className="h-3.5 w-3.5" />
-                下载
-              </a>
+        ) : (
+          <>
+            {task.videoUrl && (
+              // eslint-disable-next-line jsx-a11y/media-has-caption
+              <video
+                src={task.videoUrl}
+                className="h-full w-full object-contain opacity-40"
+                muted
+                preload="metadata"
+              />
+            )}
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+              <Loader2 className="h-7 w-7 animate-spin text-white/90" />
+              <p className="text-sm font-medium text-white">正在翻译</p>
+              <p className="text-xs text-white/70">
+                {task.stage ?? "处理中"}
+                {prog && ` ${prog}`}
+              </p>
             </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
+
+      {task.status === "done" && task.resultUrl && (
+        <div className="flex items-center justify-between bg-surface px-2.5 py-2">
+          <span className="flex items-center gap-1 text-xs text-emerald-600">
+            <Play className="h-3.5 w-3.5" />
+            完成
+          </span>
+          <a
+            href={task.resultUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-brand"
+            title="下载译制视频"
+          >
+            <Download className="h-3.5 w-3.5" />
+            下载
+          </a>
+        </div>
+      )}
     </div>
   );
 }
