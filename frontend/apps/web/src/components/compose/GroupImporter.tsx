@@ -149,10 +149,10 @@ export function GroupImporter({
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/60" />
-      <div className="relative z-10 flex h-[560px] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-[#16161c] text-white/90 shadow-2xl">
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-ink/40" />
+      <div className="relative z-10 flex h-[560px] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-surface text-foreground shadow-2xl">
         {/* tabs */}
-        <div className="flex items-center gap-1 border-b border-white/10 px-4">
+        <div className="flex items-center gap-1 border-b border-border px-4">
           {([
             { k: "upload", l: "上传", I: Upload },
             { k: "drive", l: "导入云盘", I: Cloud },
@@ -166,8 +166,8 @@ export function GroupImporter({
                 className={cn(
                   "flex items-center gap-1.5 border-b-2 px-3 py-3 text-sm font-medium transition",
                   tab === t.k
-                    ? "border-brand text-white"
-                    : "border-transparent text-white/50 hover:text-white/80",
+                    ? "border-brand text-brand"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
                 )}
               >
                 <Icon className="h-4 w-4" />
@@ -175,7 +175,7 @@ export function GroupImporter({
               </button>
             );
           })}
-          <button type="button" onClick={onClose} className="ml-auto text-white/50 transition hover:text-white">
+          <button type="button" onClick={onClose} className="ml-auto text-muted transition hover:text-foreground">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -186,7 +186,7 @@ export function GroupImporter({
         {/* body */}
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {busy ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-white/70">
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
               <Loader2 className="h-8 w-8 animate-spin text-brand" />
               <span className="text-sm">
                 {progress ? `上传中 ${progress.done}/${progress.total}…` : "处理中…"}
@@ -197,29 +197,29 @@ export function GroupImporter({
               <button
                 type="button"
                 onClick={() => folderRef.current?.click()}
-                className="flex aspect-[4/3] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-white/15 transition hover:border-brand/60 hover:bg-white/5"
+                className="flex aspect-[4/3] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border-strong transition hover:border-brand/60 hover:bg-brand-soft/40"
               >
                 <FolderPlus className="h-9 w-9 text-brand" />
                 <span className="text-sm font-medium">上传文件夹</span>
-                <span className="text-xs text-white/40">整个文件夹 = 一个镜头分组</span>
+                <span className="text-xs text-muted">整个文件夹 = 一个镜头分组</span>
               </button>
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
-                className="flex aspect-[4/3] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-white/15 transition hover:border-brand/60 hover:bg-white/5"
+                className="flex aspect-[4/3] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border-strong transition hover:border-brand/60 hover:bg-brand-soft/40"
               >
                 <Upload className="h-9 w-9 text-brand" />
                 <span className="text-sm font-medium">上传文件</span>
-                <span className="text-xs text-white/40">多个视频 = 一个镜头分组</span>
+                <span className="text-xs text-muted">多个视频 = 一个镜头分组</span>
               </button>
-              <p className="col-span-2 text-center text-xs text-white/35">
+              <p className="col-span-2 text-center text-xs text-muted">
                 支持 mp4 / mov / webm…；上传后自动存入云盘（OSS），可在「云盘」查看和复用。
               </p>
             </div>
           ) : (
             <>
               {folders.length === 0 ? (
-                <p className="py-20 text-center text-sm text-white/40">
+                <p className="py-20 text-center text-sm text-muted">
                   云盘里还没有文件夹。先到「上传」标签上传，或在云盘里新建。
                 </p>
               ) : (
@@ -233,7 +233,7 @@ export function GroupImporter({
                         onClick={() => togglePick(f.id)}
                         className={cn(
                           "relative flex flex-col gap-2 rounded-xl border p-3 text-left transition",
-                          on ? "border-brand bg-brand/10" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]",
+                          on ? "border-brand bg-brand-soft" : "border-border bg-surface-muted/40 hover:bg-surface-muted",
                         )}
                       >
                         {on && (
@@ -241,9 +241,9 @@ export function GroupImporter({
                             <Check className="h-3 w-3" />
                           </span>
                         )}
-                        <FolderIcon className="h-7 w-7 text-amber-300" />
-                        <span className="truncate text-sm font-medium">{f.name}</span>
-                        <span className="flex items-center gap-1 text-xs text-white/45">
+                        <FolderIcon className="h-7 w-7 text-amber-500" />
+                        <span className="truncate text-sm font-medium text-foreground">{f.name}</span>
+                        <span className="flex items-center gap-1 text-xs text-muted">
                           <Film className="h-3 w-3" />
                           {f.count} 个文件
                         </span>
@@ -258,13 +258,13 @@ export function GroupImporter({
 
         {/* footer (only on drive tab) */}
         {tab === "drive" && !busy && (
-          <div className="flex items-center justify-between border-t border-white/10 px-5 py-3">
-            <span className="text-sm text-white/45">已选 {picked.size} 个文件夹</span>
+          <div className="flex items-center justify-between border-t border-border px-5 py-3">
+            <span className="text-sm text-muted">已选 {picked.size} 个文件夹</span>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg border border-white/15 px-4 py-2 text-sm transition hover:bg-white/5"
+                className="rounded-lg border border-border px-4 py-2 text-sm transition hover:bg-surface-muted"
               >
                 取消
               </button>

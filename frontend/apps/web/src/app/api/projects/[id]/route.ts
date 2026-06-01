@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/db";
+import { prisma, Prisma } from "@/lib/db";
 import { requireOrg } from "@/lib/api-auth";
 
 export const runtime = "nodejs";
@@ -24,12 +24,17 @@ export async function GET(
       width: p.width,
       height: p.height,
       comboCount: p.comboCount,
+      config: p.config,
       updatedAt: p.updatedAt.toISOString(),
     },
   });
 }
 
-const patchSchema = z.object({ name: z.string().min(1).max(100) });
+const patchSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  comboCount: z.number().int().nonnegative().optional(),
+  config: z.unknown().optional(), // 编辑器配置（镜头分组 + 片段）
+});
 
 export async function PATCH(
   req: Request,
@@ -42,9 +47,15 @@ export async function PATCH(
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: "参数错误" }, { status: 400 });
   }
+  const data: Prisma.ProjectUpdateManyMutationInput = {};
+  if (parsed.data.name !== undefined) data.name = parsed.data.name;
+  if (parsed.data.comboCount !== undefined) data.comboCount = parsed.data.comboCount;
+  if (parsed.data.config !== undefined) {
+    data.config = parsed.data.config as Prisma.InputJsonValue;
+  }
   const r = await prisma.project.updateMany({
     where: { id, orgId: ctx.orgId },
-    data: { name: parsed.data.name },
+    data,
   });
   if (r.count === 0) return NextResponse.json({ ok: false }, { status: 404 });
   return NextResponse.json({ ok: true });

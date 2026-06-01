@@ -123,6 +123,7 @@ model Project {
   width       Int           @default(1080)
   height      Int           @default(1920)
   comboCount  Int           @default(0) // 视频组合数
+  config      Json? // 编辑器持久化：镜头分组 + 片段
   orgId       String
   createdById String
   createdAt   DateTime      @default(now())

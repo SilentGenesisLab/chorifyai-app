@@ -26,6 +26,7 @@ export default async function Page({
         name: project.name,
         width: project.width,
         height: project.height,
+        config: project.config,
       }}
     />
   );

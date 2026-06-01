@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
@@ -38,10 +38,21 @@ function ClipThumb({ clip, className }: { clip: Clip; className?: string }) {
 export function ComposeEditor({
   project,
 }: {
-  project: { id: string; name: string; width: number; height: number };
+  project: {
+    id: string;
+    name: string;
+    width: number;
+    height: number;
+    config?: unknown;
+  };
 }) {
   const router = useRouter();
-  const [groups, setGroups] = useState<Group[]>([]);
+  const initialGroups = (() => {
+    const g = (project.config as { groups?: Group[] } | null)?.groups;
+    return Array.isArray(g) ? g : [];
+  })();
+
+  const [groups, setGroups] = useState<Group[]>(initialGroups);
   const [count, setCount] = useState(20);
   const [combos, setCombos] = useState<Combo[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -50,6 +61,7 @@ export function ComposeEditor({
   const [folders, setFolders] = useState<{ id: string; name: string }[]>([]);
   const [saveFolderId, setSaveFolderId] = useState("");
   const [importerOpen, setImporterOpen] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     fetch("/api/drive/folders")
@@ -60,12 +72,36 @@ export function ComposeEditor({
       .catch(() => {});
   }, []);
 
+  // 持久化：镜头分组变化时防抖保存到工程 config（跳过首次加载）
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    const anyUploading = groups.some((g) => (g.uploading ?? 0) > 0);
+    if (anyUploading) return; // 等上传完再保存
+    const t = setTimeout(() => {
+      const clean = groups.map((g) => ({ id: g.id, name: g.name, clips: g.clips }));
+      fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config: { groups: clean }, comboCount: combos.length }),
+      })
+        .then(() => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 1500);
+        })
+        .catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [groups, combos.length, project.id]);
+
   const removeGroup = (id: string) => setGroups((gs) => gs.filter((g) => g.id !== id));
 
   const readyGroups = groups.filter((g) => g.clips.length > 0);
   const anyUploading = groups.some((g) => (g.uploading ?? 0) > 0);
 
-  // 生成视频 = 随机组合：每个分组按顺序各随机抽 1 条，组合 count 次
   function generate() {
     if (!readyGroups.length) return;
     const out: Combo[] = [];
@@ -87,7 +123,6 @@ export function ComposeEditor({
   const toggleAll = () =>
     setSelected((s) => (s.size === combos.length ? new Set() : new Set(combos.map((c) => c.id))));
 
-  // 合成选中的组合：逐条调 /api/mix（ffmpeg 拼接→OSS），完成后存入云盘成片
   async function composeSelected() {
     const targets = combos.filter((c) => selected.has(c.id) && c.status !== "done");
     setSaveOpen(false);
@@ -144,24 +179,27 @@ export function ComposeEditor({
   const doneCount = combos.filter((c) => c.status === "done").length;
 
   return (
-    <div className="flex h-screen flex-col bg-[#0d0d11] text-white/90">
+    <div className="flex h-screen flex-col bg-surface text-foreground">
       {/* 顶栏 */}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-white/10 px-4">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
         <button
           type="button"
           onClick={() => router.push("/compose")}
-          className="text-white/70 transition hover:text-white"
+          className="text-muted-foreground transition hover:text-foreground"
         >
           <ChevronLeft className="h-5 w-5" />
         </button>
-        <span className="font-display text-lg font-bold tracking-tight text-white">{BRAND.name}</span>
-        <span className="max-w-[220px] truncate text-sm text-white/45">/ {project.name}</span>
-        <span className="rounded bg-white/10 px-2 py-0.5 text-xs text-white/60">
+        <span className="font-display text-lg font-bold tracking-tight text-foreground">
+          {BRAND.name}
+        </span>
+        <span className="max-w-[220px] truncate text-sm text-muted">/ {project.name}</span>
+        <span className="rounded bg-surface-muted px-2 py-0.5 text-xs text-muted-foreground">
           {project.width}×{project.height}
         </span>
+        {saved && <span className="text-xs text-jade">已保存</span>}
 
         <div className="ml-auto flex items-center gap-2.5">
-          <label className="flex items-center gap-1.5 text-sm text-white/60">
+          <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
             产出数量
             <input
               type="number"
@@ -169,7 +207,7 @@ export function ComposeEditor({
               max={200}
               value={count}
               onChange={(e) => setCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
-              className="w-16 rounded-lg border border-white/15 bg-white/5 px-2 py-1.5 text-center text-sm text-white outline-none focus:border-brand/50"
+              className="w-16 rounded-lg border border-border bg-surface px-2 py-1.5 text-center text-sm text-foreground outline-none focus:border-brand/50"
             />
           </label>
           <button
@@ -186,15 +224,15 @@ export function ComposeEditor({
 
       <div className="flex min-h-0 flex-1">
         {/* 左：镜头分组 */}
-        <aside className="flex w-72 shrink-0 flex-col border-r border-white/10">
+        <aside className="flex w-72 shrink-0 flex-col border-r border-border">
           <div className="flex items-center justify-between px-4 py-3">
             <span className="flex items-center gap-1.5 text-sm font-semibold">
               <Layers className="h-4 w-4 text-brand" />
               镜头分组
             </span>
-            <span className="text-xs text-white/40">{readyGroups.length} 组</span>
+            <span className="text-xs text-muted">{readyGroups.length} 组</span>
           </div>
-          <p className="px-4 pb-2 text-xs leading-relaxed text-white/35">
+          <p className="px-4 pb-2 text-xs leading-relaxed text-muted">
             上传文件夹 = 一个镜头分组；生成时按分组顺序，每组随机抽一条拼接成片。
           </p>
 
@@ -203,31 +241,33 @@ export function ComposeEditor({
               <button
                 type="button"
                 onClick={() => setImporterOpen(true)}
-                className="flex h-36 w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 text-white/45 transition hover:border-white/30 hover:text-white/70"
+                className="flex h-36 w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border-strong text-muted transition hover:border-brand/50 hover:text-brand"
               >
                 <FolderPlus className="h-7 w-7" />
                 <span className="text-sm">添加镜头分组</span>
               </button>
             ) : (
               groups.map((g, i) => (
-                <div key={g.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-2.5">
+                <div key={g.id} className="ink-card p-2.5">
                   <div className="mb-2 flex items-center gap-2">
-                    <span className="flex h-5 min-w-5 items-center justify-center rounded bg-brand/80 px-1 text-[11px] font-bold text-white">
+                    <span className="flex h-5 min-w-5 items-center justify-center rounded bg-brand px-1 text-[11px] font-bold text-white">
                       {i + 1}
                     </span>
-                    <span className="flex-1 truncate text-sm font-medium">{g.name}</span>
+                    <span className="flex-1 truncate text-sm font-medium text-foreground">
+                      {g.name}
+                    </span>
                     {(g.uploading ?? 0) > 0 ? (
-                      <span className="flex items-center gap-1 text-xs text-white/45">
+                      <span className="flex items-center gap-1 text-xs text-muted">
                         <Loader2 className="h-3 w-3 animate-spin" />
                         {g.uploading}
                       </span>
                     ) : (
-                      <span className="text-xs text-white/45">{g.clips.length} 条</span>
+                      <span className="text-xs text-muted">{g.clips.length} 条</span>
                     )}
                     <button
                       type="button"
                       onClick={() => removeGroup(g.id)}
-                      className="text-white/40 transition hover:text-rose-400"
+                      className="text-muted transition hover:text-brand"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -236,13 +276,13 @@ export function ComposeEditor({
                     {g.clips.slice(0, 6).map((c, ci) => (
                       <div
                         key={ci}
-                        className="relative h-12 w-9 shrink-0 overflow-hidden rounded bg-black/40"
+                        className="relative h-12 w-9 shrink-0 overflow-hidden rounded bg-surface-muted"
                       >
                         <ClipThumb clip={c} className="h-full w-full object-cover" />
                       </div>
                     ))}
                     {g.clips.length > 6 && (
-                      <span className="flex h-12 w-9 shrink-0 items-center justify-center rounded bg-white/5 text-[11px] text-white/50">
+                      <span className="flex h-12 w-9 shrink-0 items-center justify-center rounded bg-surface-muted text-[11px] text-muted">
                         +{g.clips.length - 6}
                       </span>
                     )}
@@ -252,11 +292,11 @@ export function ComposeEditor({
             )}
           </div>
 
-          <div className="border-t border-white/10 p-3">
+          <div className="border-t border-border p-3">
             <button
               type="button"
               onClick={() => setImporterOpen(true)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-white/10 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-white/15"
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2.5 text-sm font-medium text-foreground transition hover:bg-surface-muted"
             >
               <FolderPlus className="h-4 w-4" />
               添加镜头分组
@@ -265,23 +305,22 @@ export function ComposeEditor({
         </aside>
 
         {/* 右：视频组合 */}
-        <main className="flex min-h-0 flex-1 flex-col">
+        <main className="flex min-h-0 flex-1 flex-col bg-background">
           {combos.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-white/40">
-              <Film className="h-10 w-10 text-white/20" />
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
+              <Film className="h-10 w-10 text-border-strong" />
               <p className="text-sm">
                 {readyGroups.length
                   ? "点右上角「生成视频」开始随机组合"
                   : anyUploading
                     ? "素材上传中…"
-                    : "先在左侧上传文件夹（每个文件夹一个镜头分组）"}
+                    : "先在左侧添加镜头分组（每个文件夹一个镜头分组）"}
               </p>
             </div>
           ) : (
             <>
-              {/* 工具条 */}
-              <div className="flex shrink-0 items-center gap-3 border-b border-white/10 px-5 py-2.5 text-sm">
-                <label className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-3 border-b border-border bg-surface/70 px-5 py-2.5 text-sm">
+                <label className="flex items-center gap-2 text-foreground">
                   <input
                     type="checkbox"
                     checked={selected.size === combos.length && combos.length > 0}
@@ -290,7 +329,7 @@ export function ComposeEditor({
                   />
                   全选
                 </label>
-                <span className="text-white/45">
+                <span className="text-muted">
                   共 {combos.length} 个组合 · 已选 {selected.size}
                   {doneCount > 0 && ` · 已合成 ${doneCount}`}
                 </span>
@@ -305,11 +344,10 @@ export function ComposeEditor({
                 </button>
               </div>
 
-              {/* 组合表：列=镜头分组，行=一个组合 */}
               <div className="min-h-0 flex-1 overflow-auto p-5">
                 <table className="w-full border-separate border-spacing-y-2">
                   <thead>
-                    <tr className="text-left text-xs text-white/45">
+                    <tr className="text-left text-xs text-muted">
                       <th className="w-10 px-2"></th>
                       <th className="w-14 px-2">序号</th>
                       {readyGroups.map((g, i) => (
@@ -322,8 +360,8 @@ export function ComposeEditor({
                   </thead>
                   <tbody>
                     {combos.map((c, ri) => (
-                      <tr key={c.id} className="rounded-lg bg-white/[0.03]">
-                        <td className="px-2">
+                      <tr key={c.id} className="bg-surface">
+                        <td className="rounded-l-lg border-y border-l border-border px-2">
                           <input
                             type="checkbox"
                             checked={selected.has(c.id)}
@@ -331,22 +369,22 @@ export function ComposeEditor({
                             className="h-4 w-4 accent-[var(--color-brand)]"
                           />
                         </td>
-                        <td className="px-2 text-sm text-white/60">#{ri + 1}</td>
+                        <td className="border-y border-border px-2 text-sm text-muted">#{ri + 1}</td>
                         {c.clips.map((cl, ci) => (
-                          <td key={ci} className="px-2 py-1.5">
+                          <td key={ci} className="border-y border-border px-2 py-1.5">
                             <div className="flex items-center gap-2">
-                              <div className="relative h-14 w-10 shrink-0 overflow-hidden rounded bg-black/40">
+                              <div className="relative h-14 w-10 shrink-0 overflow-hidden rounded bg-surface-muted">
                                 <ClipThumb clip={cl} className="h-full w-full object-cover" />
                               </div>
-                              <span className="max-w-[90px] truncate text-[11px] text-white/55">
+                              <span className="max-w-[90px] truncate text-[11px] text-muted">
                                 {cl.name}
                               </span>
                             </div>
                           </td>
                         ))}
-                        <td className="px-2">
+                        <td className="rounded-r-lg border-y border-r border-border px-2">
                           {c.status === "mixing" ? (
-                            <span className="flex items-center gap-1.5 text-xs text-amber-300">
+                            <span className="flex items-center gap-1.5 text-xs text-amber-600">
                               <Loader2 className="h-3.5 w-3.5 animate-spin" />
                               合成中…
                             </span>
@@ -356,7 +394,7 @@ export function ComposeEditor({
                                 href={c.resultUrl}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="flex items-center gap-1 rounded bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300 transition hover:bg-emerald-500/30"
+                                className="flex items-center gap-1 rounded bg-jade/15 px-2 py-1 text-xs text-jade transition hover:bg-jade/25"
                               >
                                 <Play className="h-3 w-3" />
                                 播放
@@ -364,15 +402,15 @@ export function ComposeEditor({
                               <a
                                 href={c.resultUrl}
                                 download
-                                className="text-white/50 transition hover:text-white"
+                                className="text-muted transition hover:text-foreground"
                               >
                                 <Download className="h-3.5 w-3.5" />
                               </a>
                             </div>
                           ) : c.status === "failed" ? (
-                            <span className="text-xs text-rose-400">合成失败</span>
+                            <span className="text-xs text-brand">合成失败</span>
                           ) : (
-                            <span className="text-xs text-white/35">待合成</span>
+                            <span className="text-xs text-muted">待合成</span>
                           )}
                         </td>
                       </tr>
@@ -392,7 +430,7 @@ export function ComposeEditor({
             type="button"
             aria-label="关闭"
             onClick={() => setSaveOpen(false)}
-            className="absolute inset-0 bg-black/50"
+            className="absolute inset-0 bg-ink/40"
           />
           <div className="relative z-10 w-full max-w-md rounded-2xl bg-surface p-6 text-foreground shadow-xl">
             <div className="mb-1 flex items-center justify-between">
