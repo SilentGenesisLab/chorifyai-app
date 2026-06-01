@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     ark_endpoint: str = "https://ark.cn-beijing.volces.com/api/v3/responses"
     ark_model: str = "doubao-seed-2-0-pro-260215"
 
+    # ---- Seedance 视频生成（火山方舟 Ark contents/generations，复用 ARK_API_KEY）----
+    # AI影棚「产品图 → 商品大片」走图生视频(i2v)。UI 标「Seedance 2.0」，实际后端模型
+    # 是账号已开通的 doubao-seedance-1-0-pro（可经 SEEDANCE_MODEL 覆盖）。
+    ark_video_endpoint: str = (
+        "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
+    )
+    seedance_model: str = "doubao-seedance-1-0-pro-250528"
+
     # ---- VoxCPM 语音克隆（自建 GPU 服务，HTTP 调用）----
     # 直连 voxcpm/server.py: http://127.0.0.1:8190
     # 经 ailab 网关:        http://127.0.0.1:8089/tts/voxcpm

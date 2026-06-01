@@ -137,6 +137,16 @@ export function MaterialStudio() {
             prev.map((j) => (j.id === id ? { ...j, ...d.job } : j)),
           );
           if (d.job.status === "succeeded" || d.job.status === "failed") {
+            // 持久化成功且有结果的生成（如 AI影棚 Seedance 视频）到历史
+            if (d.job.status === "succeeded" && d.job.resultUrl) {
+              persistGen({
+                module: tab,
+                kind: d.job.kind ?? "video",
+                resultUrl: d.job.resultUrl,
+                thumbnailUrl: d.job.thumbnailUrl ?? null,
+                durationSec: d.job.durationSec ?? payload.durationSec ?? null,
+              });
+            }
             clearInterval(pollers.current[id]);
             delete pollers.current[id];
           }
@@ -147,7 +157,7 @@ export function MaterialStudio() {
       pollers.current[id] = setInterval(tick, 1000);
       tick();
     },
-    [tab],
+    [tab, persistGen],
   );
 
   // Real Doubao TTS (synchronous) — backend assembles MP3 → OSS → public URL.

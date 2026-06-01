@@ -64,10 +64,33 @@ function ResultCard({ job, list }: { job: GenJob; list: boolean }) {
 
 function VideoFace({ job }: { job: GenJob }) {
   const processing = job.status === "processing";
+  const failed = job.status === "failed";
+
+  // 真实成片：内联播放（如 AI影棚 Seedance 视频）
+  if (!processing && !failed && job.resultUrl) {
+    return (
+      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl border border-border bg-black">
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <video
+          src={job.resultUrl}
+          controls
+          preload="metadata"
+          poster={job.thumbnailUrl ?? undefined}
+          className="h-full w-full object-contain"
+        />
+        <AiBadge />
+      </div>
+    );
+  }
+
   return (
     <Face seed={job.id}>
       {processing ? (
         <Processing progress={job.progress} />
+      ) : failed ? (
+        <span className="absolute inset-0 flex items-center justify-center text-xs font-medium text-brand">
+          生成失败
+        </span>
       ) : (
         <>
           <span className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-white/25 text-white/85 backdrop-blur-sm">
