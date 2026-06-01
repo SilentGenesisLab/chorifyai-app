@@ -30,13 +30,18 @@ _HAS_FFPROBE = shutil.which("ffprobe") is not None
 
 
 def _detect_nvenc() -> bool:
+    """真正跑一帧 NVENC 编码再判定 —— 仅「编码器已编入 ffmpeg」不代表有可用 GPU，
+    无显卡服务器上 h264_nvenc 仍会列出但运行即失败（会导致合成报错）。"""
     if not _HAS_FFMPEG:
         return False
     try:
-        out = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=15
-        ).stdout
-        return "h264_nvenc" in out
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "lavfi",
+             "-i", "color=c=black:s=64x64:d=0.1:r=5",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, timeout=20,
+        )
+        return r.returncode == 0
     except Exception:  # noqa: BLE001
         return False
 
