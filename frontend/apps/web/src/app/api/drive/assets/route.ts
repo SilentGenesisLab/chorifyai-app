@@ -31,7 +31,10 @@ export async function GET(req: Request) {
     status: scope === "trash" ? "DELETED" : "ACTIVE",
   };
   if (scope === "mine") where.createdById = ctx.userId;
-  if (type !== "all" && type in TYPE_MAP) {
+  if (type === "video") {
+    // 成片(FINISHED)本质也是视频 —— 类型只是标签，视频标签页里都能看到
+    where.type = { in: ["VIDEO", "FINISHED"] as ("VIDEO" | "FINISHED")[] };
+  } else if (type !== "all" && type in TYPE_MAP) {
     where.type = TYPE_MAP[type as keyof typeof TYPE_MAP];
   }
   if (folderId && scope !== "trash") where.folderId = folderId;

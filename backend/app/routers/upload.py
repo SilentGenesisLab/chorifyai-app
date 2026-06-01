@@ -7,6 +7,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.services.media import video_thumbnail_url_from_bytes
 from app.services.oss import delete_objects, put_object
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/api/upload", tags=["upload"])
 KIND_EXT: dict[str, set[str] | None] = {
     "image": {".jpg", ".jpeg", ".png", ".webp"},
     "audio": {".mp3", ".wav", ".m4a", ".aac"},
-    "video": {".mp4", ".mov", ".webm"},
+    "video": {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"},
     "file": None,  # any extension
 }
 
@@ -44,6 +45,11 @@ async def upload(file: UploadFile = File(...), kind: str = Form("file")):
     key = f"uploads/{kind}/{day}/{uuid.uuid4().hex}{ext}"
     url = put_object(key, data, file.content_type)
 
+    # 视频自动截首帧做缩略图
+    thumbnail_url = None
+    if kind == "video":
+        thumbnail_url = video_thumbnail_url_from_bytes(data, ext or ".mp4")
+
     return {
         "ok": True,
         "url": url,
@@ -52,6 +58,7 @@ async def upload(file: UploadFile = File(...), kind: str = Form("file")):
         "name": file.filename,
         "size": len(data),
         "contentType": file.content_type,
+        "thumbnailUrl": thumbnail_url,
     }
 
 

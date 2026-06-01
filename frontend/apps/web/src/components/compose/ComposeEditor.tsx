@@ -16,14 +16,24 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BRAND } from "@/lib/brand";
-import { GroupImporter, type ImportGroup } from "./GroupImporter";
+import { GroupImporter, type ImportGroup, type ImportClip } from "./GroupImporter";
 
-type Clip = { url: string; name: string };
+type Clip = ImportClip;
 type Group = ImportGroup & { uploading?: number };
 type ComboStatus = "idle" | "mixing" | "done" | "failed";
 type Combo = { id: string; clips: Clip[]; status: ComboStatus; resultUrl?: string };
 
 const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+/** 片段缩略图：有首帧封面就用 <img>，否则回退到 <video> 取首帧。 */
+function ClipThumb({ clip, className }: { clip: Clip; className?: string }) {
+  return clip.thumbnailUrl ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={clip.thumbnailUrl} alt="" className={className} />
+  ) : (
+    <video src={clip.url} muted preload="metadata" className={className} />
+  );
+}
 
 export function ComposeEditor({
   project,
@@ -111,6 +121,7 @@ export function ComposeEditor({
                   name: `${project.name}_成片${idx + 1}.mp4`,
                   type: "finished",
                   url: st.url,
+                  thumbnailUrl: st.thumbnailUrl ?? undefined,
                   folderId: saveFolderId || undefined,
                 }),
               }).catch(() => {});
@@ -227,7 +238,7 @@ export function ComposeEditor({
                         key={ci}
                         className="relative h-12 w-9 shrink-0 overflow-hidden rounded bg-black/40"
                       >
-                        <video src={c.url} muted preload="metadata" className="h-full w-full object-cover" />
+                        <ClipThumb clip={c} className="h-full w-full object-cover" />
                       </div>
                     ))}
                     {g.clips.length > 6 && (
@@ -325,12 +336,7 @@ export function ComposeEditor({
                           <td key={ci} className="px-2 py-1.5">
                             <div className="flex items-center gap-2">
                               <div className="relative h-14 w-10 shrink-0 overflow-hidden rounded bg-black/40">
-                                <video
-                                  src={cl.url}
-                                  muted
-                                  preload="metadata"
-                                  className="h-full w-full object-cover"
-                                />
+                                <ClipThumb clip={cl} className="h-full w-full object-cover" />
                               </div>
                               <span className="max-w-[90px] truncate text-[11px] text-white/55">
                                 {cl.name}

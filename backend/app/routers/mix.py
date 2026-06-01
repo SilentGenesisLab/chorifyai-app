@@ -22,6 +22,7 @@ import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.services.media import video_thumbnail_url
 from app.services.oss import put_object
 
 router = APIRouter(prefix="/api/mix", tags=["mix"])
@@ -145,11 +146,14 @@ def _run_mix(job_id: str, req: MixRequest) -> None:
             if not ok or not os.path.exists(final):
                 raise RuntimeError(f"拼接失败：{err or '未知'}")
 
+            thumb_url = video_thumbnail_url(final)
             day = datetime.now(timezone.utc).strftime("%Y%m%d")
             key = f"mix/{day}/{uuid.uuid4().hex}.mp4"
             with open(final, "rb") as f:
                 url = put_object(key, f.read(), "video/mp4")
-            _JOBS[job_id] = {"status": "done", "url": url, "key": key}
+            _JOBS[job_id] = {
+                "status": "done", "url": url, "key": key, "thumbnailUrl": thumb_url,
+            }
         except Exception as e:  # noqa: BLE001
             _JOBS[job_id] = {"status": "failed", "error": str(e)}
         finally:

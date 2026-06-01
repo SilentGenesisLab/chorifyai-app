@@ -5,7 +5,7 @@ import { X, Upload, FolderPlus, Loader2, Cloud, Film, Check, Folder as FolderIco
 import { cn } from "@/lib/utils";
 import { uploadFile } from "@/lib/upload";
 
-export type ImportClip = { url: string; name: string };
+export type ImportClip = { url: string; name: string; thumbnailUrl?: string | null };
 export type ImportGroup = { id: string; name: string; clips: ImportClip[] };
 
 type DriveFolder = { id: string; name: string; count: number };
@@ -88,11 +88,17 @@ export function GroupImporter({
     for (const f of files) {
       try {
         const up = await uploadFile(f, "video");
-        clips.push({ url: up.url, name: f.name });
+        clips.push({ url: up.url, name: f.name, thumbnailUrl: up.thumbnailUrl });
         fetch("/api/drive/assets", {
           method: "POST",
           headers: HJSON,
-          body: JSON.stringify({ name: f.name, type: "video", url: up.url, folderId }),
+          body: JSON.stringify({
+            name: f.name,
+            type: "video",
+            url: up.url,
+            thumbnailUrl: up.thumbnailUrl ?? undefined,
+            folderId,
+          }),
         }).catch(() => {});
       } catch {
         /* 跳过失败的单条 */
@@ -118,7 +124,11 @@ export function GroupImporter({
         const d = await fetch(`/api/drive/assets?type=video&folderId=${fid}`).then((r) => r.json());
         const clips: ImportClip[] = (d.assets ?? [])
           .filter((a: { url?: string }) => a.url)
-          .map((a: { url: string; name: string }) => ({ url: a.url, name: a.name }));
+          .map((a: { url: string; name: string; thumbnailUrl?: string | null }) => ({
+            url: a.url,
+            name: a.name,
+            thumbnailUrl: a.thumbnailUrl,
+          }));
         if (clips.length) groups.push({ id: rid(), name: folder?.name ?? "分组", clips });
       } catch {
         /* skip */
