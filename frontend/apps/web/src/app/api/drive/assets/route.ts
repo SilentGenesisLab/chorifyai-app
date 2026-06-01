@@ -46,20 +46,45 @@ export async function GET(req: Request) {
     take: 500,
   });
 
-  return NextResponse.json({
-    ok: true,
-    assets: assets.map((a) => ({
-      id: a.id,
-      name: a.name,
-      type: a.type,
-      url: a.url,
-      thumbnailUrl: a.thumbnailUrl,
-      durationSec: a.durationSec,
-      sizeBytes: a.sizeBytes,
-      folderId: a.folderId,
-      createdAt: a.createdAt.toISOString(),
-    })),
-  });
+  const items: Record<string, unknown>[] = assets.map((a) => ({
+    id: a.id,
+    name: a.name,
+    type: a.type,
+    url: a.url,
+    thumbnailUrl: a.thumbnailUrl,
+    durationSec: a.durationSec,
+    sizeBytes: a.sizeBytes,
+    folderId: a.folderId,
+    createdAt: a.createdAt.toISOString(),
+  }));
+
+  // 合成量产「工程」作为云盘条目展示在「工程」标签（点开进编辑器）。
+  // 只在工程标签出现，不进文件夹/回收站；以 Project 表为准，不占存储计数。
+  if (scope !== "trash" && !folderId && type === "project") {
+    const projWhere: Prisma.ProjectWhereInput = { orgId: ctx.orgId };
+    if (scope === "mine") projWhere.createdById = ctx.userId;
+    if (q) projWhere.name = { contains: q, mode: "insensitive" };
+    const projects = await prisma.project.findMany({
+      where: projWhere,
+      orderBy: { updatedAt: "desc" },
+      take: 200,
+    });
+    const projItems = projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: "PROJECT",
+      url: null,
+      thumbnailUrl: p.coverUrl,
+      durationSec: null,
+      sizeBytes: null,
+      folderId: null,
+      isProject: true,
+      createdAt: p.createdAt.toISOString(),
+    }));
+    items.unshift(...projItems);
+  }
+
+  return NextResponse.json({ ok: true, assets: items });
 }
 
 // ---------------------------------------------------------------- create

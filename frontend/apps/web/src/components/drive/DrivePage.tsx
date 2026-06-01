@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Files,
   User,
@@ -35,6 +36,7 @@ type Asset = {
   durationSec?: number | null;
   sizeBytes?: number | null;
   folderId?: string | null;
+  isProject?: boolean; // 合成量产工程（云盘里点开进编辑器）
   createdAt: string;
 };
 type Scope = "all" | "mine" | "trash";
@@ -760,8 +762,12 @@ function FileCard({
   onRestore: () => void;
   onDeleteForever: () => void;
 }) {
+  const router = useRouter();
   const isMedia = ["VIDEO", "FINISHED", "AUDIO"].includes(asset.type);
-  const open = () => asset.url && window.open(asset.url, "_blank", "noopener");
+  const open = () =>
+    asset.isProject
+      ? router.push(`/editor/${asset.id}`)
+      : asset.url && window.open(asset.url, "_blank", "noopener");
   return (
     <div className="group cursor-pointer">
       <div
@@ -777,9 +783,12 @@ function FileCard({
           {TAG[asset.type] ?? "素材"}
         </span>
 
-        {/* hover action menu */}
+        {/* hover action menu —— 工程在云盘只读（管理在「合成量产」），不显示菜单 */}
         <div
-          className="absolute right-1.5 top-1.5 opacity-0 transition group-hover:opacity-100"
+          className={cn(
+            "absolute right-1.5 top-1.5 opacity-0 transition group-hover:opacity-100",
+            asset.isProject && "hidden",
+          )}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="rounded-md bg-black/40 backdrop-blur">
