@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
@@ -16,15 +16,14 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BRAND } from "@/lib/brand";
-import { uploadFile } from "@/lib/upload";
+import { GroupImporter, type ImportGroup } from "./GroupImporter";
 
 type Clip = { url: string; name: string };
-type Group = { id: string; name: string; clips: Clip[]; uploading?: number };
+type Group = ImportGroup & { uploading?: number };
 type ComboStatus = "idle" | "mixing" | "done" | "failed";
 type Combo = { id: string; clips: Clip[]; status: ComboStatus; resultUrl?: string };
 
 const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
-const VIDEO_RE = /\.(mp4|mov|webm|mkv|avi|m4v)$/i;
 
 export function ComposeEditor({
   project,
@@ -40,16 +39,7 @@ export function ComposeEditor({
   const [saveOpen, setSaveOpen] = useState(false);
   const [folders, setFolders] = useState<{ id: string; name: string }[]>([]);
   const [saveFolderId, setSaveFolderId] = useState("");
-  const folderRef = useRef<HTMLInputElement>(null);
-
-  // webkitdirectory 是非标准属性，用 ref 设置
-  useEffect(() => {
-    const el = folderRef.current;
-    if (el) {
-      el.setAttribute("webkitdirectory", "");
-      el.setAttribute("directory", "");
-    }
-  }, []);
+  const [importerOpen, setImporterOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/drive/folders")
@@ -59,34 +49,6 @@ export function ComposeEditor({
       })
       .catch(() => {});
   }, []);
-
-  // 上传一个文件夹 → 新建一个镜头分组，逐个上传到 OSS
-  async function onFolderPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const all = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    const files = all.filter((f) => f.type.startsWith("video/") || VIDEO_RE.test(f.name));
-    if (!files.length) return;
-    const first = files[0] as File & { webkitRelativePath?: string };
-    const folderName = first.webkitRelativePath?.split("/")[0] || `分组${groups.length + 1}`;
-    const gid = rid();
-    setGroups((gs) => [...gs, { id: gid, name: folderName, clips: [], uploading: files.length }]);
-    for (const f of files) {
-      try {
-        const up = await uploadFile(f, "video");
-        setGroups((gs) =>
-          gs.map((g) =>
-            g.id === gid
-              ? { ...g, clips: [...g.clips, { url: up.url, name: f.name }], uploading: (g.uploading ?? 1) - 1 }
-              : g,
-          ),
-        );
-      } catch {
-        setGroups((gs) =>
-          gs.map((g) => (g.id === gid ? { ...g, uploading: (g.uploading ?? 1) - 1 } : g)),
-        );
-      }
-    }
-  }
 
   const removeGroup = (id: string) => setGroups((gs) => gs.filter((g) => g.id !== id));
 
@@ -229,11 +191,11 @@ export function ComposeEditor({
             {groups.length === 0 ? (
               <button
                 type="button"
-                onClick={() => folderRef.current?.click()}
+                onClick={() => setImporterOpen(true)}
                 className="flex h-36 w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 text-white/45 transition hover:border-white/30 hover:text-white/70"
               >
                 <FolderPlus className="h-7 w-7" />
-                <span className="text-sm">上传文件夹</span>
+                <span className="text-sm">添加镜头分组</span>
               </button>
             ) : (
               groups.map((g, i) => (
@@ -282,14 +244,13 @@ export function ComposeEditor({
           <div className="border-t border-white/10 p-3">
             <button
               type="button"
-              onClick={() => folderRef.current?.click()}
+              onClick={() => setImporterOpen(true)}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-white/10 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-white/15"
             >
               <FolderPlus className="h-4 w-4" />
-              上传文件夹
+              添加镜头分组
             </button>
           </div>
-          <input ref={folderRef} type="file" multiple hidden onChange={onFolderPick} />
         </aside>
 
         {/* 右：视频组合 */}
@@ -469,6 +430,12 @@ export function ComposeEditor({
           </div>
         </div>
       )}
+
+      <GroupImporter
+        open={importerOpen}
+        onClose={() => setImporterOpen(false)}
+        onConfirm={(gs) => setGroups((prev) => [...prev, ...gs])}
+      />
     </div>
   );
 }
