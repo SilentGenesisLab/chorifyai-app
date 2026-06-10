@@ -1,0 +1,65 @@
+{
+  "name": "@chorify/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chorify desktop shell for the Next.js web app and FastAPI backend",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm build && electron .",
+    "build": "tsc -p tsconfig.json",
+    "start": "electron .",
+    "pack": "pnpm build && electron-builder --dir",
+    "dist": "pnpm build && electron-builder"
+  },
+  "dependencies": {
+    "electron-is-dev": "^3.0.1",
+    "get-port": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "tsx": "^4.20.5",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "lab.silentgenesis.chorifyai",
+    "productName": "ChorifyAI",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../apps/web",
+        "to": "apps/web",
+        "filter": [
+          ".next/**",
+          "public/**",
+          "package.json",
+          "next.config.*"
+        ]
+      },
+      {
+        "from": "../../packages/db",
+        "to": "packages/db",
+        "filter": [
+          "package.json",
+          "prisma/**",
+          "src/**",
+          "generated/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    }
+  }
+}

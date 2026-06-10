@@ -6,6 +6,7 @@ node_modules/
 .next/
 .next-preview/
 .next-prod/
+.next-desktop-dev/
 out/
 build/
 dist/
