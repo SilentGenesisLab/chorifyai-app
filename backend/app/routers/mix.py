@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services.media import video_thumbnail_url
+from app.services.local_storage import copy_or_download_to, object_path
 from app.services.oss import put_object
 
 router = APIRouter(prefix="/api/mix", tags=["mix"])
@@ -87,6 +88,10 @@ def _download(url: str, dst: str, tries: int = 3) -> str:
     raise RuntimeError(f"下载片段失败：{last}")
 
 
+def _materialize_clip(url: str, dst: str) -> str:
+    return copy_or_download_to(url, dst, _download)
+
+
 def _ffmpeg(args: list[str], timeout: int = 600) -> tuple[bool, str]:
     try:
         p = subprocess.run(
@@ -151,7 +156,7 @@ def _get_normalized(url: str, w: int, h: int) -> str:
         tmp = tempfile.mkdtemp(dir=_NORM_DIR)
         try:
             suffix = os.path.splitext(url.split("?")[0])[1] or ".mp4"
-            src = _download(url, os.path.join(tmp, f"src{suffix}"))
+            src = _materialize_clip(url, os.path.join(tmp, f"src{suffix}"))
             out = os.path.join(_NORM_DIR, uuid.uuid4().hex + ".mp4")
             ok, err = _normalize(src, out, w, h)
             if not ok or not os.path.exists(out):
@@ -197,7 +202,11 @@ def _run_mix(job_id: str, req: MixRequest) -> None:
             with open(final, "rb") as f:
                 url = put_object(key, f.read(), "video/mp4")
             _JOBS[job_id] = {
-                "status": "done", "url": url, "key": key, "thumbnailUrl": thumb_url,
+                "status": "done",
+                "url": url,
+                "key": key,
+                "localPath": object_path(key),
+                "thumbnailUrl": thumb_url,
             }
         except Exception as e:  # noqa: BLE001
             _JOBS[job_id] = {"status": "failed", "error": str(e)}

@@ -33,6 +33,10 @@ function webRoot() {
   return isPackaged ? path.join(process.resourcesPath, "apps", "web") : path.join(frontendRoot(), "apps", "web");
 }
 
+function defaultLocalStorageRoot() {
+  return path.join(app.getPath("documents"), "ChorifyAI", "workspace");
+}
+
 function command(name: string) {
   return process.platform === "win32" ? `${name}.cmd` : name;
 }
@@ -82,7 +86,7 @@ async function waitForHttp(url: string, timeoutMs: number) {
   throw new Error(`Timed out waiting for ${url}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
-async function startBackend(port: number) {
+async function startBackend(port: number, webPort: number) {
   const cwd = backendRoot();
   spawnManaged(
     "fastapi",
@@ -91,8 +95,10 @@ async function startBackend(port: number) {
     cwd,
     {
       MOCK_MODE: process.env.MOCK_MODE ?? process.env.CHORIFY_MOCK_MODE ?? "true",
-      OSS_PROVIDER: process.env.OSS_PROVIDER ?? "mock",
-      CORS_ORIGINS: process.env.CORS_ORIGINS ?? "http://127.0.0.1:3001,http://localhost:3001"
+      OSS_PROVIDER: process.env.OSS_PROVIDER ?? "local",
+      LOCAL_STORAGE_ROOT: process.env.LOCAL_STORAGE_ROOT ?? defaultLocalStorageRoot(),
+      LOCAL_STORAGE_CONFIG: process.env.LOCAL_STORAGE_CONFIG ?? path.join(app.getPath("userData"), "local-storage.json"),
+      CORS_ORIGINS: process.env.CORS_ORIGINS ?? `http://127.0.0.1:${webPort},http://localhost:${webPort}`
     }
   );
   await waitForHttp(`http://127.0.0.1:${port}/health`, 60_000);
@@ -143,7 +149,7 @@ async function boot() {
   const webPort = Number(process.env.CHORIFY_WEB_PORT) || await getPort({ port: 3001 });
 
   try {
-    await startBackend(apiPort);
+    await startBackend(apiPort, webPort);
     await startWeb(webPort, apiPort);
     await createWindow(`http://localhost:${webPort}`);
   } catch (error) {

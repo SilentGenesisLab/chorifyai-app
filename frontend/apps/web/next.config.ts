@@ -36,6 +36,9 @@ const nextConfig: NextConfig = {
     return [
       { source: "/api/upload", destination: `${base}/api/upload` },
       { source: "/api/upload/:path*", destination: `${base}/api/upload/:path*` },
+      { source: "/api/local-storage", destination: `${base}/api/local-storage` },
+      { source: "/api/local-storage/:path*", destination: `${base}/api/local-storage/:path*` },
+      { source: "/api/local-files/:path*", destination: `${base}/api/local-files/:path*` },
       { source: "/api/material/:path*", destination: `${base}/api/material/:path*` },
       { source: "/api/voice/:path*", destination: `${base}/api/voice/:path*` },
       { source: "/api/split", destination: `${base}/api/split` },

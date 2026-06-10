@@ -35,6 +35,15 @@
     ],
     "extraResources": [
       {
+        "from": "../../../backend",
+        "to": "backend",
+        "filter": [
+          "app/**",
+          "requirements.txt",
+          ".env.example"
+        ]
+      },
+      {
         "from": "../../apps/web",
         "to": "apps/web",
         "filter": [

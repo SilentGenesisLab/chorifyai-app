@@ -1,8 +1,13 @@
-"""Aliyun OSS upload (oss2). Real storage for product images / video / audio /
-generic files. Set OSS_PROVIDER=mock to skip network and return fake URLs."""
+"""Storage upload.
+
+Aliyun OSS is used in cloud mode. In desktop/local mode, set
+OSS_PROVIDER=local so files are written under LOCAL_STORAGE_ROOT and served by
+the FastAPI app.
+"""
 import oss2
 
 from app.core.config import settings
+from app.services.local_storage import delete_keys, local_url, write_object
 
 
 def _bucket() -> oss2.Bucket:
@@ -18,6 +23,8 @@ def _bucket() -> oss2.Bucket:
 
 
 def public_url(key: str) -> str:
+    if settings.oss_provider == "local":
+        return local_url(key)
     base = (
         settings.aliyun_oss_public_base_url
         or f"https://{settings.aliyun_oss_bucket}.{settings.aliyun_oss_endpoint}"
@@ -26,6 +33,8 @@ def public_url(key: str) -> str:
 
 
 def put_object(key: str, data: bytes, content_type: str | None = None) -> str:
+    if settings.oss_provider == "local":
+        return write_object(key, data)[0]
     if settings.oss_provider != "aliyun":
         return public_url(key)  # mock
     headers = {"Content-Type": content_type} if content_type else None
@@ -37,7 +46,11 @@ def delete_objects(keys: list[str]) -> list[str]:
     """Delete one or more objects from OSS. Best-effort: returns the keys that
     were issued for deletion. No-op (returns []) when not using real OSS."""
     keys = [k for k in keys if k]
-    if not keys or settings.oss_provider != "aliyun":
+    if not keys:
+        return []
+    if settings.oss_provider == "local":
+        return delete_keys(keys)
+    if settings.oss_provider != "aliyun":
         return []
     bucket = _bucket()
     # batch_delete_objects handles up to 1000 keys per call.

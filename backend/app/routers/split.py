@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.services.local_storage import maybe_local_path, object_path
 from app.services.oss import put_object
 
 router = APIRouter(prefix="/api/split", tags=["split"])
@@ -40,6 +41,7 @@ class Clip(BaseModel):
     duration: float
     url: str | None = None
     thumbnail: str | None = None
+    localPath: str | None = None
 
 
 # 拆分任务存储（内存，单进程 uvicorn 足够）：job_id -> {status, method, count, has_clips, clips, error}
@@ -49,6 +51,11 @@ _JOBS: dict[str, dict] = {}
 def _download(url: str) -> str:
     suffix = os.path.splitext(url.split("?")[0])[1] or ".mp4"
     fd, path = tempfile.mkstemp(suffix=suffix)
+    local = maybe_local_path(url)
+    if local:
+        os.close(fd)
+        shutil.copyfile(local, path)
+        return path
     try:
         with requests.get(url, stream=True, timeout=180) as r:
             r.raise_for_status()
@@ -146,7 +153,9 @@ def _cut_and_upload(path: str, segments: list[tuple[float, float]], day: str) ->
                          "-c", "copy", "-avoid_negative_ts", "1", out]
                     ) and os.path.exists(out):
                         with open(out, "rb") as f:
-                            clip.url = _put_retry(f"splits/{day}/{base}.mp4", f.read(), "video/mp4")
+                            clip_key = f"splits/{day}/{base}.mp4"
+                            clip.url = _put_retry(clip_key, f.read(), "video/mp4")
+                            clip.localPath = object_path(clip_key)
                     if _ffmpeg(
                         ["-ss", f"{start + dur / 2}", "-i", path, "-frames:v", "1", "-q:v", "3", thumb]
                     ) and os.path.exists(thumb):

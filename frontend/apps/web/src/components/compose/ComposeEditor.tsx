@@ -21,9 +21,18 @@ import { GroupImporter, type ImportGroup, type ImportClip } from "./GroupImporte
 type Clip = ImportClip;
 type Group = ImportGroup & { uploading?: number };
 type ComboStatus = "idle" | "mixing" | "done" | "failed";
-type Combo = { id: string; clips: Clip[]; status: ComboStatus; resultUrl?: string };
+type Combo = { id: string; clips: Clip[]; status: ComboStatus; resultUrl?: string; localPath?: string };
 
 const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+function shuffle<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
 
 /** 片段缩略图：有首帧封面就用 <img>，否则回退到 <video> 取首帧。 */
 function ClipThumb({ clip, className }: { clip: Clip; className?: string }) {
@@ -105,8 +114,27 @@ export function ComposeEditor({
   function generate() {
     if (!readyGroups.length) return;
     const out: Combo[] = [];
-    for (let i = 0; i < count; i++) {
-      const clips = readyGroups.map((g) => g.clips[Math.floor(Math.random() * g.clips.length)]);
+    const seen = new Set<string>();
+    const maxPossible = readyGroups.reduce((total, group) => total * Math.max(1, group.clips.length), 1);
+    const target = Math.min(count, maxPossible);
+    const shuffledGroups = readyGroups.map((group) => ({ ...group, clips: shuffle(group.clips) }));
+    let guard = 0;
+    while (out.length < target && guard < target * 30) {
+      const clips = shuffledGroups.map((g, groupIndex) => {
+        const offset = out.length + groupIndex * 3 + Math.floor(out.length / Math.max(1, g.clips.length));
+        return g.clips[offset % g.clips.length];
+      });
+      const signature = clips.map((clip) => clip.url).join("|");
+      guard += 1;
+      if (seen.has(signature)) {
+        const fallback = readyGroups.map((g) => g.clips[Math.floor(Math.random() * g.clips.length)]);
+        const fallbackSignature = fallback.map((clip) => clip.url).join("|");
+        if (seen.has(fallbackSignature)) continue;
+        seen.add(fallbackSignature);
+        out.push({ id: rid(), clips: fallback, status: "idle" });
+        continue;
+      }
+      seen.add(signature);
       out.push({ id: rid(), clips, status: "idle" });
     }
     setCombos(out);
@@ -147,7 +175,11 @@ export function ComposeEditor({
             const st = await fetch(`/api/mix/${start.job_id}`).then((r) => r.json());
             if (st.status === "done") {
               setCombos((cs) =>
-                cs.map((x) => (x.id === c.id ? { ...x, status: "done", resultUrl: st.url } : x)),
+                cs.map((x) =>
+                  x.id === c.id
+                    ? { ...x, status: "done", resultUrl: st.url, localPath: st.localPath }
+                    : x,
+                ),
               );
               fetch("/api/drive/assets", {
                 method: "POST",
@@ -406,6 +438,11 @@ export function ComposeEditor({
                               >
                                 <Download className="h-3.5 w-3.5" />
                               </a>
+                              {c.localPath && (
+                                <span className="max-w-[120px] truncate text-[10px] text-muted" title={c.localPath}>
+                                  {c.localPath}
+                                </span>
+                              )}
                             </div>
                           ) : c.status === "failed" ? (
                             <span className="text-xs text-brand">合成失败</span>

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.services.media import video_thumbnail_url_from_bytes
+from app.services.local_storage import object_path
 from app.services.oss import delete_objects, put_object
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
@@ -54,6 +55,7 @@ async def upload(file: UploadFile = File(...), kind: str = Form("file")):
         "ok": True,
         "url": url,
         "key": key,
+        "localPath": object_path(key),
         "kind": kind,
         "name": file.filename,
         "size": len(data),

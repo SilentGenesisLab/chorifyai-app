@@ -5,7 +5,7 @@ import { X, Upload, FolderPlus, Loader2, Cloud, Film, Check, Folder as FolderIco
 import { cn } from "@/lib/utils";
 import { uploadFile } from "@/lib/upload";
 
-export type ImportClip = { url: string; name: string; thumbnailUrl?: string | null };
+export type ImportClip = { url: string; name: string; thumbnailUrl?: string | null; localPath?: string | null };
 export type ImportGroup = { id: string; name: string; clips: ImportClip[] };
 
 type DriveFolder = { id: string; name: string; count: number };
@@ -88,7 +88,7 @@ export function GroupImporter({
     for (const f of files) {
       try {
         const up = await uploadFile(f, "video");
-        clips.push({ url: up.url, name: f.name, thumbnailUrl: up.thumbnailUrl });
+        clips.push({ url: up.url, name: f.name, thumbnailUrl: up.thumbnailUrl, localPath: up.localPath });
         fetch("/api/drive/assets", {
           method: "POST",
           headers: HJSON,

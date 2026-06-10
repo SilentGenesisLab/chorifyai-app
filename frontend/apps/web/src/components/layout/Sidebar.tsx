@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { NAV } from "@/lib/nav";
 import { Logo } from "@/components/brand/Logo";
+import { LocalStoragePanel } from "@/components/layout/LocalStoragePanel";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { cn } from "@/lib/utils";
 
@@ -107,6 +108,8 @@ export function Sidebar({
       </nav>
 
       <div className="space-y-2 border-t border-border p-3">
+        <LocalStoragePanel />
+
         <button
           type="button"
           className="brand-gradient flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium text-white shadow-sm transition hover:opacity-90"

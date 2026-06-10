@@ -4,6 +4,7 @@ export interface UploadResult {
   ok: boolean;
   url: string;
   key: string;
+  localPath?: string | null;
   kind: string;
   name: string;
   size: number;

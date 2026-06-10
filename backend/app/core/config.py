@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3001,http://127.0.0.1:3001"
 
     # ---- Aliyun OSS (real file storage) ----
-    oss_provider: str = "aliyun"  # "aliyun" | "mock"
+    oss_provider: str = "aliyun"  # "aliyun" | "local" | "mock"
+    local_storage_root: str = ""
+    local_storage_config: str = ""
     aliyun_oss_endpoint: str = "oss-cn-shenzhen.aliyuncs.com"
     aliyun_oss_bucket: str = "chorify-nova"
     aliyun_oss_access_key_id: str = ""
