@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: process.env.CHORIFY_DESKTOP_STANDALONE === "true" ? "standalone" : undefined,
   // Allow a separate build dir (e.g. a parallel preview server on another port)
   // so two `next dev` instances don't fight over .next.
   distDir: process.env.NEXT_DIST_DIR ?? ".next",

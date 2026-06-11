@@ -11,6 +11,7 @@ out/
 build/
 dist/
 release/
+release-final/
 next-env.d.ts
 
 # ---- environment / secrets ----
