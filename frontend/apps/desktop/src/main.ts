@@ -32,6 +32,15 @@ function backendRoot() {
   return isPackaged ? path.join(process.resourcesPath, "backend") : path.resolve(repoRoot(), "backend");
 }
 
+function backendExecutable() {
+  const suffix = process.platform === "win32" ? ".exe" : "";
+  const executable = path.join(process.resourcesPath, "backend-runtime", `chorify-backend${suffix}`);
+  if (!existsSync(executable)) {
+    throw new Error(`Cannot find packaged backend executable: ${executable}`);
+  }
+  return executable;
+}
+
 function webRoot() {
   return isPackaged ? path.join(process.resourcesPath, "apps", "web") : path.join(frontendRoot(), "apps", "web");
 }
@@ -68,7 +77,14 @@ function logProcess(name: string, child: ChildProcessWithoutNullStreams) {
   child.on("exit", (code, signal) => console.log(`[${name}] exited code=${code} signal=${signal}`));
 }
 
-function spawnManaged(name: string, cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
+function spawnManaged(
+  name: string,
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = {},
+  useShell = false
+) {
   const child = spawn(cmd, args, {
     cwd,
     env: {
@@ -78,7 +94,7 @@ function spawnManaged(name: string, cmd: string, args: string[], cwd: string, en
       PYTHONIOENCODING: "utf-8"
     },
     windowsHide: true,
-    shell: process.platform === "win32"
+    shell: useShell
   });
   logProcess(name, child);
   processes.push({ name, child });
@@ -111,20 +127,27 @@ async function assertPortFree(port: number, label: string) {
 }
 
 async function startBackend(port: number, webPort: number) {
-  const cwd = backendRoot();
-  spawnManaged(
-    "fastapi",
-    pythonCommand(),
-    ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)],
-    cwd,
-    {
-      MOCK_MODE: process.env.MOCK_MODE ?? process.env.CHORIFY_MOCK_MODE ?? "true",
-      OSS_PROVIDER: process.env.OSS_PROVIDER ?? "local",
-      LOCAL_STORAGE_ROOT: process.env.LOCAL_STORAGE_ROOT ?? defaultLocalStorageRoot(),
-      LOCAL_STORAGE_CONFIG: process.env.LOCAL_STORAGE_CONFIG ?? path.join(app.getPath("userData"), "local-storage.json"),
-      CORS_ORIGINS: process.env.CORS_ORIGINS ?? `http://127.0.0.1:${webPort},http://localhost:${webPort}`
-    }
-  );
+  const backendEnv = {
+    CHORIFY_API_PORT: String(port),
+    MOCK_MODE: process.env.MOCK_MODE ?? process.env.CHORIFY_MOCK_MODE ?? "true",
+    OSS_PROVIDER: process.env.OSS_PROVIDER ?? "local",
+    LOCAL_STORAGE_ROOT: process.env.LOCAL_STORAGE_ROOT ?? defaultLocalStorageRoot(),
+    LOCAL_STORAGE_CONFIG: process.env.LOCAL_STORAGE_CONFIG ?? path.join(app.getPath("userData"), "local-storage.json"),
+    CORS_ORIGINS: process.env.CORS_ORIGINS ?? `http://127.0.0.1:${webPort},http://localhost:${webPort}`
+  };
+  if (isPackaged) {
+    const executable = backendExecutable();
+    spawnManaged("fastapi", executable, [], path.dirname(executable), backendEnv);
+  } else {
+    const cwd = backendRoot();
+    spawnManaged(
+      "fastapi",
+      pythonCommand(),
+      ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)],
+      cwd,
+      backendEnv
+    );
+  }
   await waitForHttp(`http://127.0.0.1:${port}/health`, 60_000);
 }
 
@@ -156,7 +179,8 @@ async function startWeb(webPort: number, apiPort: number) {
         AI_SERVICE_URL: `http://127.0.0.1:${apiPort}`,
         NEXT_DIST_DIR: ".next-desktop-dev",
         NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME ?? "ChorifyAI"
-      }
+      },
+      process.platform === "win32"
     );
   }
   await waitForHttp(`http://127.0.0.1:${webPort}`, 120_000);

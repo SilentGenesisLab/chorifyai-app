@@ -7,11 +7,12 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm build && electron .",
+    "build:backend": "node scripts/build-backend.mjs",
     "build:web": "node scripts/build-web.mjs",
     "build": "tsc -p tsconfig.json",
     "start": "electron .",
-    "pack": "pnpm build:web && pnpm build && electron-builder --dir",
-    "dist": "pnpm build:web && pnpm build && electron-builder"
+    "pack": "pnpm build:backend && pnpm build:web && pnpm build && electron-builder --dir",
+    "dist": "pnpm build:backend && pnpm build:web && pnpm build && electron-builder"
   },
   "dependencies": {
     "electron-is-dev": "^3.0.1",
@@ -43,6 +44,10 @@
           "requirements.txt",
           ".env.example"
         ]
+      },
+      {
+        "from": "../../../backend/dist/chorify-backend",
+        "to": "backend-runtime"
       },
       {
         "from": "../../apps/web",

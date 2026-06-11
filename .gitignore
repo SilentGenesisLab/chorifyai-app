@@ -31,8 +31,10 @@ next-env.d.ts
 __pycache__/
 *.py[cod]
 .venv/
+.venv-desktop/
 venv/
 .pytest_cache/
+*.spec
 
 # ---- logs ----
 *.log
