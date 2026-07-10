@@ -22,25 +22,41 @@ class PresetMetric:
 
 
 def calculate_metrics(rows: list[dict[str, Any]]) -> list[PresetMetric]:
-    jobs: dict[str, dict[str, Any]] = {}
+    assets: dict[tuple[str, str], dict[str, Any]] = {}
+    jobs: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    downloaded_assets: set[tuple[str, str]] = set()
+    regenerated_jobs: set[str] = set()
+    acted_assets: set[tuple[str, str]] = set()
     grouped: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: {"generated": 0, "downloaded": 0, "quick_regenerated": 0, "abandoned": 0})
     for row in sorted(rows, key=lambda item: str(item["ts"])):
         action = row["action"]
-        if action == "generate" and not row.get("error_code") and row.get("result_url") and row["job_id"] not in jobs:
-            jobs[row["job_id"]] = row
+        result_url = str(row.get("result_url") or "")
+        asset_key = (row["job_id"], result_url)
+        if action == "generate" and not row.get("error_code") and result_url and asset_key not in assets:
+            assets[asset_key] = row
+            jobs[row["job_id"]].append(asset_key)
             grouped[(row["client_id"], row["preset_id"])]["generated"] += 1
         elif row["job_id"] in jobs and action == "download":
-            origin = jobs[row["job_id"]]
-            grouped[(origin["client_id"], origin["preset_id"])]["downloaded"] += 1
-        elif row["job_id"] in jobs and action == "regenerate":
-            origin = jobs[row["job_id"]]
+            matches = [asset_key] if asset_key in assets else jobs[row["job_id"]][:1]
+            for matched in matches:
+                acted_assets.add(matched)
+                if matched not in downloaded_assets:
+                    origin = assets[matched]
+                    grouped[(origin["client_id"], origin["preset_id"])]["downloaded"] += 1
+                    downloaded_assets.add(matched)
+        elif row["job_id"] in jobs and action == "regenerate" and row["job_id"] not in regenerated_jobs:
+            origin = assets[jobs[row["job_id"]][0]]
             start = datetime.fromisoformat(str(origin["ts"]).replace("Z", "+00:00"))
             end = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
             if (end - start).total_seconds() <= 60:
                 grouped[(origin["client_id"], origin["preset_id"])]["quick_regenerated"] += 1
-    acted = {(row["job_id"]) for row in rows if row["action"] in {"download", "regenerate", "preview", "delete"}}
-    for job_id, origin in jobs.items():
-        if job_id not in acted:
+                regenerated_jobs.add(row["job_id"])
+            acted_assets.update(jobs[row["job_id"]])
+        elif row["job_id"] in jobs and action in {"preview", "delete"}:
+            matches = [asset_key] if asset_key in assets else jobs[row["job_id"]]
+            acted_assets.update(matches)
+    for asset_key, origin in assets.items():
+        if asset_key not in acted_assets:
             grouped[(origin["client_id"], origin["preset_id"])]["abandoned"] += 1
     return [PresetMetric(client, preset, **counts) for (client, preset), counts in grouped.items()]
 

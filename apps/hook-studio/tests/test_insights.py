@@ -15,3 +15,16 @@ def test_download_and_quick_regenerate_signals():
     metric = calculate_metrics(rows)[0]
     assert (metric.generated, metric.downloaded, metric.quick_regenerated, metric.abandoned) == (3, 1, 1, 1)
     assert metric.download_rate == 1 / 3
+
+
+def test_batch_assets_cannot_exceed_one_hundred_percent_download_rate():
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for index in range(3):
+        url = f"https://cdn/{index}.mp4"
+        rows.append({"ts": now, "action": "generate", "job_id": "batch", "client_id": "c", "preset_id": "batch", "error_code": None, "result_url": url})
+        rows.append({"ts": now, "action": "download", "job_id": "batch", "client_id": "c", "preset_id": "batch", "result_url": url})
+        rows.append({"ts": now, "action": "download", "job_id": "batch", "client_id": "c", "preset_id": "batch", "result_url": url})
+    metric = calculate_metrics(rows)[0]
+    assert (metric.generated, metric.downloaded, metric.abandoned) == (3, 3, 0)
+    assert metric.download_rate == 1

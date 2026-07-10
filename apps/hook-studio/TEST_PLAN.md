@@ -1,58 +1,63 @@
-# Hook Studio 测试计划
+# Hook Studio Chat OS v2 测试计划
 
 日期：2026-07-10  
-目标网址：`https://chorifyai.sligenai.cn/hook-studio/`
+公网：`https://chorifyai.sligenai.cn/hook-studio/`
 
-## 测试层级
+## 验收范围
 
 | 层级 | 目标 | 通过标准 |
 | --- | --- | --- |
-| 单元测试 | 配置、鉴权、配额、事件、skill gate、provider、QC、队列、备份、insights | 全部通过，无跳过 |
-| 集成测试 | FastAPI 生命周期、无码 401、登录、图片/视频生成、管理后台、双队列 | fake provider 模式全绿 |
-| 构建检查 | Python compile、TypeScript、Vite、secret scan | 全部退出码 0 |
-| Playwright 本地 | 桌面与手机客户流、管理流、截图 | 4/4 通过，无布局遮挡或白屏 |
-| 公网安检 | HTTPS、401、cookie、隔离、健康、管理、备份 | 全部通过 |
-| 真实生成 | GPT Image 2 和 Seedance 2.0 | 两种模式各至少 3 次成功；视频均通过音轨/时长/比例 QC |
+| 单元/集成 | 数据迁移、鉴权、配额、附件解析、Provider、故事板、长视频拆段、批量并发、训练数据 | Pytest 全绿 |
+| 构建/安检 | TypeScript、Vite、明文密钥扫描、无码 API | 全部退出码 0；无码 401 |
+| 公网 UI | 登录、对话、额度、真实媒体、右侧任务、管理后台、移动抽屉 | Playwright 桌面/手机全绿 |
+| 真实模型 | GPT Image 2、Seedance、Kernel Understand、TTS、FFmpeg | 可见工具各有真实成功结果 |
+| 数据可靠性 | SQLite/JSONL、备份、OSS、隔离恢复 | checksum 与 SQLite integrity 全绿 |
 
-## Playwright 用例
+## 核心用例
 
-1. 未登录访问 `/api/studio/bootstrap` 返回 401。
-2. 客户码登录并进入三步工作台。
-3. 图片模式显示不限日量，提交后进入图片队列并落入画廊。
-4. 视频模式显示全站今日用量，提交前经过 skill gate，完成后落入画廊。
-5. `/api/health` 同时返回独立 `image`、`video` 队列和各自并发。
-6. 画廊包含预览、下载、重生成、删除控件。
-7. 管理码登录后显示客户、用量、健康、备份和全站上限。
-8. 1440x1000 与 390x844 两个视口截图无重叠、溢出或不可读按钮。
-
-## 配额与时间
-
-- 全站视频上限：100/UTC+8 日。
-- 客户子配额：由访问码配置。
-- 图片：无日量上限。
-- 真实验收预算：3 张图片 + 3 条 5 秒视频。
-- 单个真实任务等待上限：15 分钟；超时记录原 provider job ID，不重复提交。
+1. 无码访问 `/api/studio/bootstrap` 返回 401。
+2. 客户码登录后左下角显示账号、图片 `X/1000` 和视频 `X/客户额度`。
+3. 多对话互相独立，附件和结果按访问码隔离。
+4. 文本、PDF、DOCX、XLSX、PPTX、图片、视频、音频和 HTTP(S) 链接可安全接收、解析并持久化。
+5. 图片生产进入独立图片队列，服务端扣图片额度并在对话返回图片。
+6. 视频缺少时长时先回问；60 秒及以上按 4-15 秒镜头拆分。
+7. 所有视频生产先返回故事板和分镜图，确认后才预留视频额度。
+8. 参控复刻明确绑定图片1、视频1和上一镜头连续性，不复制原品牌/人物/字幕/音乐。
+9. 批量生产返回多个独立成片；不同变体并行，单变体内镜头保持顺序。
+10. 逆向分析返回 probe、关键帧和结构化分析。
+11. 定向替换通过 Seedance 重绘目标区间，再由 FFmpeg 回拼源视频。
+12. 声音替换通过内部 TTS 生成音频并由 FFmpeg 替换音轨。
+13. 右侧显示等待/执行/成功/失败数量、阶段、进度、媒体预览和批量 ZIP 下载。
+14. 管理后台可改客户额度、停用码、改全站上限并导出训练/事件 JSONL。
+15. 备份恢复到隔离目录后，所有 v2 表可读且 `PRAGMA integrity_check=ok`。
 
 ## 当前结果
 
 | 检查 | 结果 |
 | --- | --- |
-| Pytest | `32 passed` |
-| Python compileall | PASS |
-| Secret scan | PASS |
+| Pytest | PASS，`71 tests` |
+| Secret scan | PASS，`SECRET_SCAN_PASS` |
 | TypeScript | PASS |
-| Vite build | PASS |
-| Playwright 本地 | `4 passed` |
-| 公网 Playwright | 管理后台桌面/手机 `2 passed`；真实模型工作流已执行 |
-| 真实图片 3 次 | PASS，累计 `5 succeeded`；另有一次上游重试后超时被诚实标记失败 |
-| 真实视频 3 次 | PASS，`3 succeeded`；3/3 skill gate 与成片 QC 通过 |
-| 备份恢复演练 | PASS，OSS 上传成功；临时目录恢复后 SQLite `integrity=ok`、18 jobs、事件日志 51658 bytes |
+| Vite production build | PASS，1581 modules |
+| 公网 HTTPS/health | PASS，200 / `status=ok` |
+| 无码 API | PASS，401 |
+| 公网 Playwright | PASS，`4 passed, 2 expected skipped` |
+| 图片、视频、逆向、复刻、批量、定向替换、换声 | 全部真实成功 |
+| 真实批量 | PASS，一次任务返回 3 个 QC 通过成片 |
+| 备份上传/校验 | PASS，`hook-studio-20260710T112324Z.tar.gz` |
+| 隔离恢复 | PASS，SQLite `integrity=ok`，事件日志 61431 bytes |
 
-## 公网实测记录
+## 真实运行发现
 
-- 发布时间：2026-07-10（UTC+8）。
-- 发布版本：`10ec56673162`。
-- HTTPS、无码 401、健康探针、客户登录、管理后台均通过。
-- 首轮真实请求暴露 Kernel capability 不能复用内部 `run_id`，已改为 `external_ref` 并回归。
-- Seedance 要求至少一个参考素材；无上传图时现在自动生成 9:16 首帧，再提交视频，过程写入 `auto_first_frame` 可观测字段。
-- 真实视频用时较长但均在 15 分钟门限内完成；没有重复提交相同 provider job。
+- 首轮并发视频理解在 70 秒超时门限下失败。已把 Kernel 单请求超时调整为 240 秒，并把重型理解串行化；重试后的逆向、复刻、批量、替换全部成功。
+- 首轮 3 变体批量采用串行生成，超过 15 分钟目标。已记录卡点并改为“变体并行、镜头串行”，由共享生成信号量约束全局并发；自动化批量回归通过。
+- 前端公网首轮测试发现移动遮罩测试点击位置不合理和测试选择器歧义；修正测试后桌面/手机均通过，并保留截图证据。
+- 真实 provider 可能需要数分钟。任务状态、失败原因和原始结果都写入 SQLite，不用白屏或假进度掩盖等待。
+
+## 证据
+
+- [真实验收记录](docs/evidence/2026-07-10-chat-os/REAL_ACCEPTANCE.md)
+- [客户工作台截图](docs/evidence/2026-07-10-chat-os/customer-chat-os.png)
+- [管理后台截图](docs/evidence/2026-07-10-chat-os/admin-data-assets.png)
+- [移动端抽屉截图](docs/evidence/2026-07-10-chat-os/mobile-drawers.png)
+- [移动端登录截图](docs/evidence/2026-07-10-chat-os/mobile-login.png)

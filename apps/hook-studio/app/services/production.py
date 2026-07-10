@@ -162,7 +162,7 @@ class ProductionManager:
             voice_text = str(params.get("voice_text") or params.get("prompt") or "").strip()
             if not voice_text: raise ProductionError("声音替换需要新的口播文本")
             result = await self.audio.replace(video_assets[0]["storage_uri"], voice_text, voice_id=params.get("voice_id"), request_id=task["id"])
-            asset = self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=result["result_url"], status="ready", metadata={"task_id": task["id"], "operation": "voice_replace"})
+            asset = self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=result["result_url"], status="ready", metadata={"task_id": task["id"], "operation": "voice_replace", "qc": result.get("probe")})
             await self._complete(task, result, media_assets=[asset])
             return
         duration = int(params.get("duration_seconds") or 0)
