@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -32,10 +33,12 @@ def _admin(request: Request) -> Any:
 class CodePatch(BaseModel):
     enabled: bool | None = None
     daily_video_limit: int | None = Field(default=None, ge=0, le=100)
+    daily_image_limit: int | None = Field(default=None, ge=0, le=1000)
 
 
 class SettingsPatch(BaseModel):
     global_video_daily_limit: int | None = Field(default=None, ge=1, le=1000)
+    global_image_daily_limit: int | None = Field(default=None, ge=1, le=100000)
     image_concurrency: int | None = Field(default=None, ge=1, le=20)
     video_concurrency: int | None = Field(default=None, ge=1, le=20)
 
@@ -66,6 +69,15 @@ async def dashboard(request: Request) -> dict[str, Any]:
         status = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM jobs GROUP BY status").fetchall()}
         today = {row["client_id"]: dict(row) for row in conn.execute("SELECT * FROM daily_usage WHERE day_cn=?", (day,)).fetchall()}
         downloads = {row["client_id"]: row["n"] for row in conn.execute("SELECT client_id,COUNT(*) n FROM events WHERE action='download' GROUP BY client_id").fetchall()}
+        ledger = [dict(row) for row in conn.execute(
+            """SELECT client_id,resource,SUM(units) units FROM quota_ledger
+            WHERE day_cn=? AND state IN ('reserved','committed') GROUP BY client_id,resource""", (day,),
+        ).fetchall()]
+        table_counts = {
+            name: conn.execute(f"SELECT COUNT(*) n FROM {name}").fetchone()["n"]
+            for name in ("conversations", "messages", "assets", "task_runs", "storyboards", "training_examples")
+        }
+    ledger_by_client = {(row["client_id"], row["resource"]): int(row["units"] or 0) for row in ledger}
     clients = []
     for item in code_data.get("codes", []):
         if item.get("role", "client") != "client":
@@ -73,16 +85,19 @@ async def dashboard(request: Request) -> dict[str, Any]:
         row = today.get(item.get("id"), {})
         clients.append({
             "id": item.get("id"), "name": item.get("client_name"), "enabled": item.get("enabled", True),
-            "video_used": int(row.get("video_reserved", 0)) + int(row.get("video_succeeded", 0)),
-            "video_limit": item.get("daily_video_limit", 100), "downloads": downloads.get(item.get("id"), 0),
+            "video_used": ledger_by_client.get((item.get("id"), "video"), int(row.get("video_reserved", 0)) + int(row.get("video_succeeded", 0))),
+            "video_limit": item.get("daily_video_limit", 100),
+            "image_used": ledger_by_client.get((item.get("id"), "image"), 0),
+            "image_limit": item.get("daily_image_limit", 1000),
+            "downloads": downloads.get(item.get("id"), 0),
         })
-    global_used = sum(int(row.get("video_reserved", 0)) + int(row.get("video_succeeded", 0)) for row in today.values())
+    global_used = sum(row["units"] for row in ledger if row["resource"] == "video")
     backup = getattr(request.app.state, "backup_status", None)
     return {
         "clients": clients,
         "usage": {"global_video_used": global_used, "global_video_limit": request.app.state.quota.global_limit, "reset_at": next_reset_at().isoformat()},
         "usage_rows": usage, "settings": settings, "jobs": status,
-        "health": {"database": "ok", "backup": backup or "unknown"},
+        "health": {"database": "ok", "backup": backup or "unknown"}, "tables": table_counts,
     }
 
 
@@ -110,12 +125,14 @@ async def patch_settings(patch: SettingsPatch, request: Request) -> dict[str, An
     values = patch.model_dump(exclude_none=True)
     if not values:
         return {"updated": {}}
-    from datetime import datetime, timezone
     with request.app.state.db.transaction(immediate=True) as conn:
         for key, value in values.items():
             conn.execute("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", (key, json.dumps(value), datetime.now(timezone.utc).isoformat()))
     if "global_video_daily_limit" in values:
         request.app.state.quota.global_limit = int(values["global_video_daily_limit"])
+        request.app.state.production.global_video_limit = int(values["global_video_daily_limit"])
+    if "global_image_daily_limit" in values:
+        request.app.state.production.global_image_limit = int(values["global_image_daily_limit"])
     return {"updated": values, "restart_required": any(key.endswith("concurrency") for key in values)}
 
 
@@ -158,6 +175,35 @@ async def export_events(request: Request) -> FileResponse:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     return FileResponse(path, media_type="application/x-ndjson", filename="hook-studio-events.jsonl")
+
+
+@router.get("/training/export")
+async def export_training(request: Request) -> FileResponse:
+    _admin(request)
+    directory = request.app.state.settings.data_dir / "exports"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"training-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
+    with request.app.state.db.transaction() as conn, path.open("w", encoding="utf-8") as output:
+        rows = conn.execute("SELECT * FROM training_examples ORDER BY created_at,id").fetchall()
+        for row in rows:
+            item = dict(row)
+            for key in ("input_json", "output_json", "labels_json", "quality_json"):
+                item[key.removesuffix("_json")] = json.loads(item.pop(key) or "{}")
+            output.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return FileResponse(path, media_type="application/x-ndjson", filename="hook-studio-training.jsonl")
+
+
+@router.get("/data/tables")
+async def data_tables(request: Request, table: str = "conversations", limit: int = 200) -> dict[str, Any]:
+    _admin(request)
+    allowed = {"conversations", "messages", "assets", "asset_extractions", "task_runs", "storyboards", "storyboard_shots", "activity_events", "training_examples", "quota_ledger"}
+    if table not in allowed:
+        raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "不支持的数据表"})
+    limit = max(1, min(1000, limit))
+    with request.app.state.db.transaction() as conn:
+        columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        rows = [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()]
+    return {"table": table, "columns": columns, "rows": rows, "limit": limit}
 
 
 @router.post("/insights")

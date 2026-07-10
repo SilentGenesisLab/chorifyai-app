@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, auth, studio
+from app.api import admin, auth, studio, workspace
 from app.auth import AccessCodeStore, AuthError, SessionSigner
 from app.backup import BackupManager
 from app.db import Database
@@ -22,7 +22,11 @@ from app.providers.fake import FakeKernelProvider
 from app.qc import VideoPostflightQC
 from app.quota import QuotaService
 from app.queues import QueueManager
+from app.repositories.workspace import WorkspaceRepository
+from app.services.audio import AudioReplacementService
 from app.services.generation import GenerationService, SQLiteJobRepository
+from app.services.ingestion import AttachmentIngestionService
+from app.services.production import ProductionManager
 from app.settings import Settings
 from app.skill_policy import VideoSkillPolicy
 
@@ -40,7 +44,7 @@ def _apply_persisted_settings(settings: Settings, db: Database) -> Settings:
     with db.transaction() as conn:
         rows = {row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT key,value FROM settings").fetchall()}
     changes = {}
-    for key in ("global_video_daily_limit", "image_concurrency", "video_concurrency"):
+    for key in ("global_video_daily_limit", "global_image_daily_limit", "image_concurrency", "video_concurrency", "production_concurrency"):
         if key in rows:
             changes[key] = int(rows[key])
     return replace(settings, **changes) if changes else settings
@@ -82,6 +86,21 @@ async def lifespan(app: FastAPI):
         video_concurrency=settings.video_concurrency,
     )
     generation.bind_queues(queues)
+    workspace_repository = WorkspaceRepository(db)
+    workspace_repository.backfill_legacy()
+    audio = AudioReplacementService(
+        provider, base_url=settings.tts_base_url, api_key=settings.internal_api_key,
+        default_voice=settings.default_tts_voice,
+    )
+    production = ProductionManager(
+        workspace_repository, provider,
+        global_image_limit=settings.global_image_daily_limit,
+        global_video_limit=settings.global_video_daily_limit,
+        image_concurrency=settings.image_concurrency,
+        video_concurrency=settings.production_concurrency,
+        poll_interval=0.01 if settings.provider_mode == "fake" else 20,
+        audio=audio, events=events,
+    )
     app.state.settings = settings
     app.state.db = db
     app.state.access_store = store
@@ -90,6 +109,10 @@ async def lifespan(app: FastAPI):
     app.state.quota = quota
     app.state.generation_service = generation
     app.state.queues = queues
+    app.state.workspace = workspace_repository
+    app.state.ingestion = AttachmentIngestionService(max_bytes=512 * 1024 * 1024)
+    app.state.production = production
+    app.state.events = events
     app.state.presets = _load_presets()
     app.state.backup = BackupManager(
         settings.database_path, settings.events_path, settings.data_dir / "backups",
@@ -100,15 +123,19 @@ async def lifespan(app: FastAPI):
         backup_row = conn.execute("SELECT value FROM settings WHERE key='last_backup'").fetchone()
     app.state.backup_status = json.loads(backup_row["value"]) if backup_row else "尚未执行"
     await queues.start()
+    await production.start()
     app.state.recovered_jobs = await queues.recover(repository)
+    app.state.recovered_tasks = await production.recover()
     try:
         yield
     finally:
+        await production.stop()
         await queues.stop()
 
 
-app = FastAPI(title="Hook Studio", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title="Hook Studio", version="2.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.include_router(auth.router)
+app.include_router(workspace.router)
 app.include_router(studio.router)
 app.include_router(admin.router)
 
@@ -171,6 +198,8 @@ async def protected_health(request: Request) -> dict:
         "database": "ok",
         "queues": {"image": asdict(image), "video": asdict(video)},
         "recovered_jobs": request.app.state.recovered_jobs,
+        "recovered_tasks": request.app.state.recovered_tasks,
+        "production": await request.app.state.production.snapshot(),
         "backup": request.app.state.backup_status,
     }
 

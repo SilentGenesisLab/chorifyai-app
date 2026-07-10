@@ -24,6 +24,7 @@ class AccessCodeRecord(BaseModel):
     client_name: str = Field(min_length=1, max_length=100)
     role: Role = Role.CLIENT
     daily_video_limit: int = Field(default=100, ge=0, le=100)
+    daily_image_limit: int = Field(default=1000, ge=0, le=1000)
     enabled: bool = True
 
 
@@ -32,6 +33,7 @@ class Principal(BaseModel):
     client_name: str
     role: Role
     daily_video_limit: int
+    daily_image_limit: int = 1000
 
 
 class LoginRequest(BaseModel):

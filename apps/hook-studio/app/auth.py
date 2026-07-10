@@ -60,6 +60,7 @@ class AccessCodeStore:
                     client_name=record.client_name,
                     role=record.role,
                     daily_video_limit=record.daily_video_limit,
+                    daily_image_limit=record.daily_image_limit,
                 )
         if disabled_match:
             raise AuthError("CODE_DISABLED", "访问码已停用，请联系管理员")
@@ -76,6 +77,7 @@ class AccessCodeStore:
                     client_name=record.client_name,
                     role=record.role,
                     daily_video_limit=record.daily_video_limit,
+                    daily_image_limit=record.daily_image_limit,
                 )
         raise AuthError("AUTH_REQUIRED", "访问码不存在，请重新登录")
 
@@ -93,6 +95,7 @@ class SessionSigner:
             "name": principal.client_name,
             "role": principal.role.value,
             "limit": principal.daily_video_limit,
+            "image_limit": principal.daily_image_limit,
             "iat": issued_at,
             "exp": expires_at,
         }, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -112,6 +115,7 @@ class SessionSigner:
             principal = Principal(
                 code_id=data["sub"], client_name=data["name"],
                 role=Role(data["role"]), daily_video_limit=int(data["limit"]),
+                daily_image_limit=int(data.get("image_limit", 1000)),
             )
             return Session(principal=principal, expires_at=int(data["exp"]))
         except AuthError:

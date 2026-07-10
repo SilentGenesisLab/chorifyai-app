@@ -4,11 +4,13 @@ codes:
     client_name: 示例客户
     role: client
     daily_video_limit: 30
+    daily_image_limit: 1000
     enabled: true
   - id: admin-primary
     code: replace-admin-code
     client_name: 内部管理员
     role: admin
     daily_video_limit: 100
+    daily_image_limit: 1000
     enabled: true
 
