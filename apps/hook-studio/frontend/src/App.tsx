@@ -464,7 +464,9 @@ function Admin({ session, onLogout }: { session: Session; onLogout: () => void }
     try {
       const data = await api.admin(); const raw = asRecord(data); const healthData = asRecord(raw.health)
       setClients(list(raw.clients).map(value => { const item = asRecord(value); return { id: String(item.id || item.code_id), name: String(item.name || item.client_name), enabled: Boolean(item.enabled), videoUsed: n(item.video_used), videoLimit: n(item.video_limit || item.daily_video_limit, 100), imageUsed: n(item.image_used), imageLimit: n(item.image_limit || item.daily_image_limit, 1000), downloads: n(item.downloads) } }))
-      setUsage(normalizeUsage(Array.isArray(raw.usage) ? raw.usage[0] : raw.usage)); setHealth(String(healthData.database || raw.health || '正常')); setBackup(String(healthData.backup || raw.backup || '暂无记录')); setTables(asRecord(raw.tables) as Record<string, number>); setError('')
+      const backupData = healthData.backup || raw.backup
+      const backupLabel = typeof backupData === 'string' ? backupData : asRecord(backupData).verified ? `已验证 · ${String(asRecord(backupData).created_at || '').slice(0, 10)}` : '暂无记录'
+      setUsage(normalizeUsage(Array.isArray(raw.usage) ? raw.usage[0] : raw.usage)); setHealth(String(healthData.database || raw.health || '正常')); setBackup(backupLabel); setTables(asRecord(raw.tables) as Record<string, number>); setError('')
     } catch (reason) { setError(reason instanceof ApiError ? reason.message : '管理数据加载失败') } finally { setLoading(false) }
   }, [])
   useEffect(() => { load() }, [load])
