@@ -44,6 +44,7 @@ class ProductionManager:
         self._pending = {"image": set(), "video": set()}
         self._running = {"image": set(), "video": set()}
         self._lock = asyncio.Lock()
+        self._planning_lock = asyncio.Semaphore(1)
 
     async def start(self) -> None:
         if self._workers: return
@@ -150,7 +151,9 @@ class ProductionManager:
         video_assets = [a for a in assets if a.get("media_type") == "video" and a.get("storage_uri")]
         if kind == "reverse":
             if not video_assets: raise ProductionError("逆向分析需要一个视频或视频链接")
-            result = await self.analysis.analyze(video_assets[0]["storage_uri"], request_id=task["id"], goal=str(params.get("prompt") or ""))
+            self.repository.update_task(task["id"], {"status": "planning", "stage": "reverse_analysis", "progress": 0.2})
+            async with self._planning_lock:
+                result = await self.analysis.analyze(video_assets[0]["storage_uri"], request_id=task["id"], goal=str(params.get("prompt") or ""))
             await self._complete(task, result, media_assets=[])
             return
         if kind == "voice_replace":
@@ -167,10 +170,11 @@ class ProductionManager:
         durations = split_duration(duration)
         image_urls = [a["storage_uri"] for a in assets if a.get("media_type") == "image" and a.get("storage_uri")]
         video_urls = [a["storage_uri"] for a in video_assets]
-        raw = await self.provider.understand(
-            text=planning_prompt(brief=str(params.get("prompt") or ""), tool=kind, durations=durations, context=self._asset_context(assets)),
-            image_urls=image_urls[:9], video_urls=video_urls[:3], request_id=f"{task['id']}:plan",
-        )
+        async with self._planning_lock:
+            raw = await self.provider.understand(
+                text=planning_prompt(brief=str(params.get("prompt") or ""), tool=kind, durations=durations, context=self._asset_context(assets)),
+                image_urls=image_urls[:9], video_urls=video_urls[:3], request_id=f"{task['id']}:plan",
+            )
         shots = normalize_plan(raw, brief=str(params.get("prompt") or ""), durations=durations, tool=kind)
         image_units = len(shots) * batch_count
         self.repository.reserve(client_id=task["client_id"], resource="image", units=image_units, task_id=task["id"], client_limit=int(params.get("client_image_limit") or 1000), global_limit=self.global_image_limit)

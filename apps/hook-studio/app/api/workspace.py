@@ -39,6 +39,7 @@ TOOL_REVERSE = {value[0]: key for key, value in TOOL_MAP.items()}
 STAGE_MAP = {
     "queued": "解析素材",
     "analyzing": "解析素材",
+    "reverse_analysis": "逆向分析",
     "planning": "分镜规划",
     "storyboard_review": "等待确认",
     "revision_requested": "分镜规划",

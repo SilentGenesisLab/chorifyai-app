@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
     provider = (
         FakeKernelProvider()
         if settings.provider_mode == "fake"
-        else KernelProvider(settings.kernel_base_url, settings.kernel_bearer, timeout_seconds=70)
+        else KernelProvider(settings.kernel_base_url, settings.kernel_bearer, timeout_seconds=240)
     )
     quota = QuotaService(db, settings.global_video_daily_limit)
     events = EventWriter(db, settings.events_path)
