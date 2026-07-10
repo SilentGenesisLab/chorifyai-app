@@ -160,7 +160,20 @@ class GenerationService:
             await self._event("generate", failed)
 
     async def _generate_video(self, job: dict[str, Any]) -> ProviderResult:
-        result = await self.provider.submit_video(prompt=job["prompt_final"], image_urls=job.get("reference_urls", []), duration=int(job.get("duration", 4)), request_id=job["id"], metadata={"preset_id": job["preset_id"], "template_version": job["template_version"], "skill_trace": job.get("skill_trace", {})})
+        image_urls = list(job.get("reference_urls", []))
+        first_frame_trace: dict[str, Any] | None = None
+        if not image_urls:
+            first_frame = await self.provider.generate_image(
+                prompt=f"为以下短视频生成真实摄影质感的9:16首帧，不要文字或水印：{job['prompt_final']}",
+                reference_urls=[],
+                request_id=f"{job['id']}:first-frame",
+                metadata={"purpose": "video_first_frame", "parent_job_id": job["id"]},
+            )
+            if first_frame.status != "success" or not first_frame.result_url:
+                raise ProviderError(first_frame.failure_reason or "自动首帧生成失败")
+            image_urls = [first_frame.result_url]
+            first_frame_trace = {"result_url": first_frame.result_url, "provider": first_frame.trace}
+        result = await self.provider.submit_video(prompt=job["prompt_final"], image_urls=image_urls, duration=int(job.get("duration", 4)), request_id=job["id"], metadata={"preset_id": job["preset_id"], "template_version": job["template_version"], "skill_trace": job.get("skill_trace", {}), "auto_first_frame": first_frame_trace is not None})
         submit_trace = dict(result.trace)
         await self.repository.update_job(job["id"], {"provider_job_id": result.submit_id, "provider_status": result.status})
         if result.status == "failed":
@@ -181,7 +194,7 @@ class GenerationService:
             error = ValueError("成片技术安检未通过，未计为成功")
             error.code = "RESULT_INVALID"  # type: ignore[attr-defined]
             raise error
-        return ProviderResult(result.status, result.result_url, result.submit_id, result.local_path, trace={"attempts": int(submit_trace.get("attempts", 1)), "submit": submit_trace, "poll": result.trace, "qc": qc.as_dict()})
+        return ProviderResult(result.status, result.result_url, result.submit_id, result.local_path, trace={"attempts": int(submit_trace.get("attempts", 1)), "auto_first_frame": first_frame_trace, "submit": submit_trace, "poll": result.trace, "qc": qc.as_dict()})
 
 
 class SQLiteJobRepository:

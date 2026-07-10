@@ -29,7 +29,9 @@ class Events:
 
 
 class Provider:
-    async def submit_video(self, **kwargs): return ProviderResult("submitted", submit_id="s1")
+    def __init__(self): self.submissions = []
+    async def generate_image(self, **kwargs): return ProviderResult("success", "https://cdn/first-frame.png", "i1", trace={"attempts": 1})
+    async def submit_video(self, **kwargs): self.submissions.append(kwargs); return ProviderResult("submitted", submit_id="s1")
     async def poll_video(self, *args, **kwargs): return ProviderResult("success", "https://cdn/v.mp4", "s1")
 
 
@@ -43,13 +45,16 @@ def test_video_reservation_and_postflight_success():
     repo, quota, events = Repo(), Quota(), Events()
     policy = VideoSkillPolicy.from_file(Path(__file__).parents[1] / "config" / "skill-policy-v1.yaml")
     async def probe(_): return {"duration": 4.2, "streams": [{"codec_type": "video", "width": 720, "height": 1280}, {"codec_type": "audio"}]}
-    service = GenerationService(repo, Provider(), quota, events, policy, VideoPostflightQC(probe), poll_interval=0, poll_timeout=1)
+    provider = Provider()
+    service = GenerationService(repo, provider, quota, events, policy, VideoPostflightQC(probe), poll_interval=0, poll_timeout=1)
     queues = Queues(); service.bind_queues(queues)
     job = await service.submit(GenerationCommand(client_id="c1", client_video_limit=20, mode="video", preset_id="pain-point", template_version="1.0.0", prompt_user="产品", prompt_final="美区厨房里，当用户按下按钮，随后产品打开，同时保留原生环境音和动作音，不出现水印。"))
     await service.process(job["id"])
     assert repo.jobs[job["id"]]["status"] == "succeeded"
     assert [call[0] for call in quota.calls] == ["reserve", "success"]
     assert len(events.items) == 2
+    assert provider.submissions[0]["image_urls"] == ["https://cdn/first-frame.png"]
+    assert repo.jobs[job["id"]]["result_meta"]["auto_first_frame"]["result_url"].endswith("first-frame.png")
  asyncio.run(run())
 
 
