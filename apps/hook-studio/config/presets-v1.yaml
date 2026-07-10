@@ -4,8 +4,8 @@ presets:
     label: 痛点直击
     version: "1.0.0"
     cost_units: {image: 0, video: 1}
-  - id: product-pop
-    label: 产品弹出
+  - id: visual-impact
+    label: 强视觉开场
     version: "1.0.0"
     cost_units: {image: 0, video: 1}
   - id: suspense
@@ -17,11 +17,10 @@ presets:
     version: "1.0.0"
     cost_units: {image: 0, video: 1}
   - id: use-scene
-    label: 使用场景
+    label: 真实使用场景
     version: "1.0.0"
     cost_units: {image: 0, video: 1}
-  - id: handheld
-    label: 手持展示
+  - id: handheld-proof
+    label: 手持动作证明
     version: "1.0.0"
     cost_units: {image: 0, video: 1}
-

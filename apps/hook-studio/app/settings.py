@@ -26,6 +26,7 @@ class Settings:
     global_video_daily_limit: int
     image_concurrency: int
     video_concurrency: int
+    provider_mode: str
     kernel_base_url: str
     kernel_bearer: str | None
 
@@ -54,6 +55,7 @@ class Settings:
             global_video_daily_limit=int(get("GLOBAL_VIDEO_DAILY_LIMIT", "100")),
             image_concurrency=int(get("IMAGE_CONCURRENCY", "2")),
             video_concurrency=int(get("VIDEO_CONCURRENCY", "2")),
+            provider_mode=get("PROVIDER_MODE", "kernel").strip().lower(),
             kernel_base_url=get("KERNEL_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
             kernel_bearer=os.getenv("HOOK_STUDIO_KERNEL_BEARER") or None,
         )
@@ -71,4 +73,5 @@ class Settings:
         ):
             if value <= 0:
                 raise ValueError(f"HOOK_STUDIO_{name} must be positive")
-
+        if self.provider_mode not in {"kernel", "fake"}:
+            raise ValueError("HOOK_STUDIO_PROVIDER_MODE must be kernel or fake")
