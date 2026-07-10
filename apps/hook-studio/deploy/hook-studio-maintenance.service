@@ -1,0 +1,17 @@
+[Unit]
+Description=Hook Studio health, backup, and insights maintenance
+After=hook-studio.service
+
+[Service]
+Type=oneshot
+User=donxu
+Group=donxu
+WorkingDirectory=/opt/hook-studio/current
+EnvironmentFile=/etc/hook-studio/hook-studio.env
+ExecStartPre=/usr/bin/curl --fail --silent http://127.0.0.1:8011/healthz
+ExecStart=/opt/hook-studio/current/.venv/bin/python -m app.maintenance
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hook-studio
