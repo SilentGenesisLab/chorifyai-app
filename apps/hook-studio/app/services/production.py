@@ -45,6 +45,7 @@ class ProductionManager:
         self._running = {"image": set(), "video": set()}
         self._lock = asyncio.Lock()
         self._planning_lock = asyncio.Semaphore(1)
+        self._generation_slots = asyncio.Semaphore(video_concurrency)
 
     async def start(self) -> None:
         if self._workers: return
@@ -237,14 +238,19 @@ class ProductionManager:
         if task["kind"] == "replace":
             if not source_videos or not replacement_images: raise ProductionError("定向替换需要源视频和替换参考图")
             start = float(params.get("replace_start") or 0); end = float(params.get("replace_end") or shots[0].get("duration_seconds") or 5)
-            generated = await self.provider.submit_video(prompt=f"参考视频1保持镜头、动作、光线和节奏不变，只替换{params.get('replace_target') or '指定元素'}。替换内容严格参考图片1。保持其他人物、商品、场景、声音和构图不变。{params.get('prompt') or ''}", image_urls=replacement_images[:1], video_urls=source_videos[:1], duration=max(4, min(15, round(end - start))), request_id=f"{task['id']}:replace", metadata={"task_id": task["id"], "operation": "targeted_replace"})
-            generated = await self._wait_video(generated, f"{task['id']}:replace")
+            async with self._generation_slots:
+                generated = await self.provider.submit_video(prompt=f"参考视频1保持镜头、动作、光线和节奏不变，只替换{params.get('replace_target') or '指定元素'}。替换内容严格参考图片1。保持其他人物、商品、场景、声音和构图不变。{params.get('prompt') or ''}", image_urls=replacement_images[:1], video_urls=source_videos[:1], duration=max(4, min(15, round(end - start))), request_id=f"{task['id']}:replace", metadata={"task_id": task["id"], "operation": "targeted_replace"})
+                generated = await self._wait_video(generated, f"{task['id']}:replace")
             output = await replace_segment_file(source_videos[0], generated.result_url, start=start, end=end)
             final_url = await self.provider.upload_blob(f"replacement-{task['id']}.mp4", output, "video/mp4", stage="video.replace", request_id=task["id"])
             probe = await self._probe_video(final_url, request_id=f"{task['id']}:replace:qc")
             final_assets.append(self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=final_url, status="ready", metadata={"task_id": task["id"], "operation": "targeted_replace", "range": [start, end], "qc": probe}))
         else:
-            for variant in range(batch_count):
+            progress_lock = asyncio.Lock()
+            completed_segments = 0
+
+            async def generate_variant(variant: int) -> dict[str, Any]:
+                nonlocal completed_segments
                 segment_urls: list[str] = []
                 for index, shot in enumerate(shots):
                     image_asset = self.repository.get_asset(str(shot.get("image_asset_id")), client_id=task["client_id"])
@@ -258,16 +264,23 @@ class ProductionManager:
                     if segment_urls:
                         previous_slot = 2 if task["kind"] == "replicate" and source_videos else 1
                         reference_rules.append(f"视频{previous_slot}是上一镜头，只用于动作、构图和时间连续性")
-                    result = await self.provider.submit_video(prompt=f"{'；'.join(reference_rules)}。{prompt}。第{variant + 1}个差异化版本。保持故事板主体与9:16构图，无字幕无水印。", image_urls=[image_asset["storage_uri"]] if image_asset and image_asset.get("storage_uri") else replacement_images[:1], video_urls=video_refs[:3], duration=int(round(float(shot.get("duration_seconds") or 5))), request_id=f"{task['id']}:v{variant + 1}:s{index + 1}", metadata={"task_id": task["id"], "variant": variant + 1, "shot": index + 1, "reference_manifest": {"image1": "storyboard_identity", "video1": "source_structure" if task["kind"] == "replicate" and source_videos else "previous_continuity"}})
-                    result = await self._wait_video(result, f"{task['id']}:v{variant + 1}:s{index + 1}"); segment_urls.append(result.result_url)
-                    progress = 0.45 + 0.45 * ((variant * len(shots) + index + 1) / (batch_count * len(shots)))
-                    self.repository.update_task(task["id"], {"status": "generating", "stage": f"镜头 {index + 1}/{len(shots)}", "progress": progress, "result": {"segments": segment_urls, "variant": variant + 1}})
-                self.repository.update_task(task["id"], {"status": "assembling", "stage": "assembling", "progress": 0.93})
-                transcode = await self.provider.transcode(segment_urls, filename=f"{task['id']}-variant-{variant + 1}.mp4", request_id=f"{task['id']}:assemble:{variant + 1}")
+                    async with self._generation_slots:
+                        result = await self.provider.submit_video(prompt=f"{'；'.join(reference_rules)}。{prompt}。第{variant + 1}个差异化版本。保持故事板主体与9:16构图，无字幕无水印。", image_urls=[image_asset["storage_uri"]] if image_asset and image_asset.get("storage_uri") else replacement_images[:1], video_urls=video_refs[:3], duration=int(round(float(shot.get("duration_seconds") or 5))), request_id=f"{task['id']}:v{variant + 1}:s{index + 1}", metadata={"task_id": task["id"], "variant": variant + 1, "shot": index + 1, "reference_manifest": {"image1": "storyboard_identity", "video1": "source_structure" if task["kind"] == "replicate" and source_videos else "previous_continuity"}})
+                        result = await self._wait_video(result, f"{task['id']}:v{variant + 1}:s{index + 1}")
+                    segment_urls.append(result.result_url)
+                    async with progress_lock:
+                        completed_segments += 1
+                        progress = 0.45 + 0.45 * (completed_segments / (batch_count * len(shots)))
+                        self.repository.update_task(task["id"], {"status": "generating", "stage": f"镜头 {completed_segments}/{batch_count * len(shots)}", "progress": progress, "result": {"segments": segment_urls, "variant": variant + 1}})
+                async with self._generation_slots:
+                    transcode = await self.provider.transcode(segment_urls, filename=f"{task['id']}-variant-{variant + 1}.mp4", request_id=f"{task['id']}:assemble:{variant + 1}")
                 if not transcode.result_url:
                     raise ProductionError("视频拼接未返回结果")
                 probe = await self._probe_video(transcode.result_url, request_id=f"{task['id']}:assemble:{variant + 1}:qc")
-                final_assets.append(self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=transcode.result_url, status="ready", metadata={"task_id": task["id"], "variant": variant + 1, "segments": segment_urls, "qc": probe}))
+                return self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=transcode.result_url, status="ready", metadata={"task_id": task["id"], "variant": variant + 1, "segments": segment_urls, "qc": probe})
+
+            final_assets = list(await asyncio.gather(*(generate_variant(variant) for variant in range(batch_count))))
+            self.repository.update_task(task["id"], {"status": "assembling", "stage": "assembling", "progress": 0.95})
         self.repository.commit(task_id=task["id"], resource="video", client_id=task["client_id"])
         await self._complete(task, {"assets": final_assets, "target_duration": params.get("duration_seconds")}, media_assets=final_assets)
 

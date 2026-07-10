@@ -74,3 +74,25 @@ def test_long_video_storyboard_confirmation_flow(monkeypatch, tmp_path):
         confirmed = next(item["storyboard"] for item in refreshed if item["kind"] == "storyboard")
         assert confirmed["status"] == "confirmed"
         assert any(item["assets"] and item["assets"][0]["type"] == "video" for item in refreshed)
+
+
+def test_batch_variants_complete_as_one_task(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        client.post("/api/auth/login", json={"access_code": "client-code"})
+        conversation = client.post("/api/studio/conversations", json={"title": "批量"}).json()
+        submitted = client.post(
+            f"/api/studio/conversations/{conversation['id']}/messages",
+            data={"text": "批量生成3条差异化产品视频", "tool": "batch_production", "duration_seconds": "4", "links": "[]"},
+        ).json()
+        _wait_task(client, submitted["task"]["id"], {"waiting_confirmation"})
+        board = next(
+            item["storyboard"] for item in client.get(
+                f"/api/studio/conversations/{conversation['id']}/messages"
+            ).json()["items"] if item["kind"] == "storyboard"
+        )
+        client.post(f"/api/studio/storyboards/{board['id']}/confirm", json={"approved": True, "feedback": ""})
+        done = _wait_task(client, submitted["task"]["id"], {"succeeded", "failed"})
+        assert done["status"] == "succeeded"
+        messages = client.get(f"/api/studio/conversations/{conversation['id']}/messages").json()["items"]
+        assert len(messages[-1]["assets"]) == 3
