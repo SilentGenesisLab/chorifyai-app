@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+config/access_codes.yaml
+data/
+logs/
+backups/
+frontend/dist/
+

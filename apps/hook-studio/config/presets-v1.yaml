@@ -1,0 +1,27 @@
+schema_version: 1
+presets:
+  - id: pain-point
+    label: 痛点直击
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: product-pop
+    label: 产品弹出
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: suspense
+    label: 悬念开场
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: contrast
+    label: 对比冲击
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: use-scene
+    label: 使用场景
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: handheld
+    label: 手持展示
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+
