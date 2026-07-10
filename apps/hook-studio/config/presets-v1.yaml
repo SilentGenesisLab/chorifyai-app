@@ -1,0 +1,26 @@
+schema_version: 1
+presets:
+  - id: pain-point
+    label: 痛点直击
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: visual-impact
+    label: 强视觉开场
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: suspense
+    label: 悬念开场
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: contrast
+    label: 对比冲击
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: use-scene
+    label: 真实使用场景
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}
+  - id: handheld-proof
+    label: 手持动作证明
+    version: "1.0.0"
+    cost_units: {image: 0, video: 1}

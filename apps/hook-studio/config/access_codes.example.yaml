@@ -1,0 +1,14 @@
+codes:
+  - id: client-demo-01
+    code: replace-client-code
+    client_name: 示例客户
+    role: client
+    daily_video_limit: 30
+    enabled: true
+  - id: admin-primary
+    code: replace-admin-code
+    client_name: 内部管理员
+    role: admin
+    daily_video_limit: 100
+    enabled: true
+

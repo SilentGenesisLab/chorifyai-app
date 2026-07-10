@@ -1,0 +1,20 @@
+{
+  "policy_pack": "hook-video-reliability",
+  "version": "1.0.0",
+  "duration_seconds": [4, 5],
+  "ratio": "9:16",
+  "resolution": "720p",
+  "max_reference_images": 4,
+  "prompt_min_length": 24,
+  "required_audio_terms": ["\u539f\u751f\u73af\u5883\u97f3", "\u52a8\u4f5c\u97f3"],
+  "required_action_terms": ["\u968f\u540e", "\u540c\u65f6", "\u7136\u540e", "\u5f53", "\u89e6\u53d1", "\u6253\u5f00", "\u6309\u4e0b", "\u62c9\u52a8", "\u5012\u5165", "\u6d82\u62b9", "\u5c55\u793a"],
+  "prohibited_terms": ["\u88f8\u9732", "\u672a\u6210\u5e74\u4eba", "\u4eff\u5192", "\u4fb5\u6743", "\u6c34\u5370", "\u7ade\u54c1logo"],
+  "checks": [
+    {"id": "slot-order", "hard": true},
+    {"id": "reference-role", "hard": true},
+    {"id": "action-causality", "hard": true},
+    {"id": "duration-ratio", "hard": true},
+    {"id": "native-audio-intent", "hard": true},
+    {"id": "privacy-prohibited-elements", "hard": true}
+  ]
+}
