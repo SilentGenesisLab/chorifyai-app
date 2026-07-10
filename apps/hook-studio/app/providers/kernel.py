@@ -101,7 +101,7 @@ class KernelProvider:
         return str(uri)
 
     async def generate_image(self, *, prompt: str, reference_urls: list[str], request_id: str, metadata: dict[str, Any] | None = None) -> ProviderResult:
-        payload = {"prompt": prompt, "reference_urls": reference_urls, "aspect_ratio": "9:16", "external_ref": "hook-studio", "run_id": request_id, "stage": "image.generate", "metadata": metadata or {}}
+        payload = {"prompt": prompt, "reference_urls": reference_urls, "aspect_ratio": "9:16", "external_ref": f"hook-studio:{request_id}", "stage": "image.generate", "metadata": {"hook_job_id": request_id, **(metadata or {})}}
         data = await self._request("POST", "/capabilities/v1/images/generate", json=payload, request_id=request_id)
         url = data.get("image_url")
         if not url:
@@ -111,7 +111,7 @@ class KernelProvider:
         return ProviderResult("success", str(url), trace.get("submit_id"), data.get("local_path"), trace=trace)
 
     async def submit_video(self, *, prompt: str, image_urls: list[str], duration: int, request_id: str, metadata: dict[str, Any] | None = None) -> ProviderResult:
-        payload = {"prompt": prompt, "image_urls": image_urls, "video_urls": [], "duration": duration, "ratio": "9:16", "resolution": "720p", "external_ref": "hook-studio", "run_id": request_id, "stage": "video.submit", "metadata": metadata or {}}
+        payload = {"prompt": prompt, "image_urls": image_urls, "video_urls": [], "duration": duration, "ratio": "9:16", "resolution": "720p", "external_ref": f"hook-studio:{request_id}", "stage": "video.submit", "metadata": {"hook_job_id": request_id, **(metadata or {})}}
         data = await self._request("POST", "/capabilities/v1/videos/generate", json=payload, request_id=request_id)
         submit_id = data.get("submit_id")
         if not submit_id:
@@ -121,18 +121,18 @@ class KernelProvider:
         return ProviderResult(str(data.get("status", "submitted")), data.get("video_url"), str(submit_id), data.get("local_path"), data.get("failure_reason"), trace)
 
     async def poll_video(self, submit_id: str, *, request_id: str, external_ref: str = "hook-studio") -> ProviderResult:
-        data = await self._request("GET", f"/capabilities/v1/videos/jobs/{submit_id}", params={"run_id": request_id, "external_ref": external_ref, "stage": "video.poll"}, request_id=request_id)
+        data = await self._request("GET", f"/capabilities/v1/videos/jobs/{submit_id}", params={"external_ref": f"{external_ref}:{request_id}", "stage": "video.poll"}, request_id=request_id)
         trace = dict(data.get("raw") or {})
         trace["poll_attempts"] = int(data.get("_hook_attempts", 1))
         return ProviderResult(str(data.get("status", "running")), data.get("video_url"), str(data.get("submit_id") or submit_id), data.get("local_path"), data.get("failure_reason"), trace)
 
     async def cancel_video(self, submit_id: str, *, request_id: str) -> bool:
-        data = await self._request("POST", f"/capabilities/v1/videos/jobs/{submit_id}/cancel", params={"run_id": request_id, "external_ref": "hook-studio"}, request_id=request_id)
+        data = await self._request("POST", f"/capabilities/v1/videos/jobs/{submit_id}/cancel", params={"external_ref": f"hook-studio:{request_id}"}, request_id=request_id)
         return bool(data.get("cancelled"))
 
     async def probe_media(self, source_uri: str, *, request_id: str | None = None) -> dict[str, Any]:
         rid = request_id or f"probe-{uuid4().hex}"
-        data = await self._request("POST", "/capabilities/v1/media/probe", json={"source_uri": source_uri, "run_id": rid, "external_ref": "hook-studio", "stage": "video.postflight"}, request_id=rid)
+        data = await self._request("POST", "/capabilities/v1/media/probe", json={"source_uri": source_uri, "external_ref": f"hook-studio:{rid}", "stage": "video.postflight", "metadata": {"hook_job_id": rid}}, request_id=rid)
         probe = data.get("probe")
         if not isinstance(probe, dict):
             raise ProviderRejected("媒体探测响应缺少probe")

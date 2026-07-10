@@ -19,6 +19,8 @@ def test_submit_then_poll_same_video_id():
         done = await provider.poll_video(submit.submit_id, request_id="j1")
     assert done.result_url.endswith("v.mp4")
     assert all(request.headers["authorization"] == "Bearer secret" for request in seen)
+    assert all("run_id" not in request.url.params for request in seen)
+    assert "run_id" not in seen[0].read().decode()
  asyncio.run(run())
 
 
