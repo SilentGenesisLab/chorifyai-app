@@ -169,10 +169,10 @@ h1, h2, p { margin: 0; }
 .admin-title { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 25px; }
 .admin-name { font-size: 12px; color: var(--muted); }
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
-.metric { min-height: 150px; border: 1px solid var(--line); background: white; border-radius: 6px; padding: 16px; display: grid; grid-template-columns: 1fr auto; align-items: start; }
+.metric { min-width: 0; min-height: 150px; border: 1px solid var(--line); background: white; border-radius: 6px; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
 .metric-icon { grid-column: 2; grid-row: 1 / span 2; width: 35px; height: 35px; display: grid; place-items: center; color: var(--green); background: #edf5f1; border-radius: 4px; }
 .metric > span { font-size: 11px; color: var(--muted); }
-.metric > b { font-size: 26px; align-self: end; font-variant-numeric: tabular-nums; }
+.metric > b { font-size: 26px; align-self: end; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .metric > small { color: var(--muted); font-size: 10px; }
 .admin-section { margin-bottom: 18px; overflow: hidden; }
 .admin-section-head { min-height: 76px; padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
