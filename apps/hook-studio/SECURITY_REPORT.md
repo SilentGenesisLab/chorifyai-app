@@ -1,6 +1,6 @@
 # Hook Studio 安检报告
 
-状态：本地门禁通过，公网复核待部署  
+状态：本地与公网门禁通过
 日期：2026-07-10
 
 | 检查 | 本地结果 | 证据 |
@@ -20,5 +20,11 @@
 | 备份包安全 | PASS | 固定文件白名单、常规文件限制、checksum、SQLite integrity check |
 | Session cookie | PASS | HttpOnly、SameSite=Lax；生产启用 Secure |
 
-公网部署后补充：HTTPS 证书、Nginx header、systemd 权限、OSS 备份、恢复演练和前端 bundle 二次扫描。
+## 公网复核
 
+- HTTPS 证书校验通过，公网入口返回 200。
+- 无码访问受保护 API 返回 401。
+- systemd 服务仅监听 `127.0.0.1:8011`，由现有 HTTPS Nginx 路径代理。
+- `/etc/hook-studio` 与秘密文件不进 Git；前端生产 bundle 二次扫描无密钥。
+- OSS 备份上传成功且本地包校验通过；恢复到隔离临时目录后 SQLite `PRAGMA integrity_check=ok`。
+- 维护 timer 处于 active，每日执行健康、备份、Insights。

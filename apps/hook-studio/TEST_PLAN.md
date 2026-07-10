@@ -43,8 +43,16 @@
 | TypeScript | PASS |
 | Vite build | PASS |
 | Playwright 本地 | `4 passed` |
-| 公网 Playwright | 待部署后执行 |
-| 真实图片 3 次 | 待部署后执行 |
-| 真实视频 3 次 | 待部署后执行 |
-| 备份恢复演练 | 本地单元与校验通过；公网 OSS 待部署后执行 |
+| 公网 Playwright | 管理后台桌面/手机 `2 passed`；真实模型工作流已执行 |
+| 真实图片 3 次 | PASS，累计 `5 succeeded`；另有一次上游重试后超时被诚实标记失败 |
+| 真实视频 3 次 | PASS，`3 succeeded`；3/3 skill gate 与成片 QC 通过 |
+| 备份恢复演练 | PASS，OSS 上传成功；临时目录恢复后 SQLite `integrity=ok`、18 jobs、事件日志 51658 bytes |
 
+## 公网实测记录
+
+- 发布时间：2026-07-10（UTC+8）。
+- 发布版本：`10ec56673162`。
+- HTTPS、无码 401、健康探针、客户登录、管理后台均通过。
+- 首轮真实请求暴露 Kernel capability 不能复用内部 `run_id`，已改为 `external_ref` 并回归。
+- Seedance 要求至少一个参考素材；无上传图时现在自动生成 9:16 首帧，再提交视频，过程写入 `auto_first_frame` 可观测字段。
+- 真实视频用时较长但均在 15 分钟门限内完成；没有重复提交相同 provider job。

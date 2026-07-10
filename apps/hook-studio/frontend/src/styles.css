@@ -238,6 +238,18 @@ td em { font-size: 10px; font-style: normal; font-variant-numeric: tabular-nums;
   .metric-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .metric { min-height: 130px; padding: 13px; }
   .metric > b { font-size: 21px; }
+  .table-wrap { overflow: visible; }
+  .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; min-width: 0; width: 100%; }
+  .table-wrap thead { display: none; }
+  .table-wrap tr { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .table-wrap tr:last-child { border-bottom: 0; }
+  .table-wrap td { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 0; padding: 6px 0; }
+  .table-wrap td::before { color: var(--muted); font-size: 11px; }
+  .table-wrap td:nth-child(1) { display: block; padding-bottom: 10px; }
+  .table-wrap td:nth-child(2)::before { content: '今日视频'; }
+  .table-wrap td:nth-child(3)::before { content: '下载'; }
+  .table-wrap td:nth-child(4)::before { content: '日配额'; }
+  .table-wrap td:nth-child(5)::before { content: '访问状态'; }
   .settings-row { align-items: stretch; flex-direction: column; gap: 18px; }
   .global-setting input { flex: 1; min-width: 0; }
 }

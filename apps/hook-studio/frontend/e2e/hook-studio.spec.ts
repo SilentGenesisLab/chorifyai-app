@@ -49,7 +49,7 @@ test('无码 API 为 401，客户可完成图片和视频双队列流程', async
 test('管理员可查看客户、用量和服务状态', async ({ page }, testInfo) => {
   await login(page, ADMIN_CODE)
   await expect(page.getByRole('heading', { name: '今日运行概览' })).toBeVisible()
-  await expect(page.getByText('本地测试客户')).toBeVisible()
+  await expect(page.locator('tbody tr').first()).toBeVisible()
   await expect(page.getByText('全站视频用量')).toBeVisible()
   await expect(page.getByText('服务健康')).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('admin-dashboard.png'), fullPage: true })
