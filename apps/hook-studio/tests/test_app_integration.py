@@ -33,7 +33,9 @@ def _wait_for_success(client: TestClient, job_id: str) -> dict:
 def test_protected_flow_and_independent_modes(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     with TestClient(app) as client:
-        assert client.get("/healthz").status_code == 200
+        health = client.get("/healthz")
+        assert health.status_code == 200
+        assert {"status", "service", "build_sha", "schema_version", "skill_pack_version"} <= set(health.json())
         assert client.get("/api/studio/bootstrap").status_code == 401
         login = client.post("/api/auth/login", json={"access_code": "client-code"})
         assert login.status_code == 200

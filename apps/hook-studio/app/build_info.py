@@ -15,6 +15,6 @@ def build_info() -> dict[str, str]:
 
     return {
         "build_sha": _public_value("HOOK_STUDIO_BUILD_SHA", "unknown"),
-        "schema_version": _public_value("HOOK_STUDIO_SCHEMA_VERSION", "legacy-v2"),
-        "skill_pack_version": _public_value("HOOK_STUDIO_SKILL_PACK_VERSION", "legacy-v2"),
+        "schema_version": _public_value("HOOK_STUDIO_SCHEMA_VERSION", "3"),
+        "skill_pack_version": _public_value("HOOK_STUDIO_SKILL_PACK_VERSION", "full-storyboard-v1.0.0"),
     }

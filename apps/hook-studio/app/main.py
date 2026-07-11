@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import admin, auth, studio, workspace
 from app.auth import AccessCodeStore, AuthError, SessionSigner
 from app.backup import BackupManager
+from app.build_info import build_info
 from app.db import Database
 from app.events import EventWriter
 from app.insights import InsightsService
@@ -188,7 +189,9 @@ async def unhandled_error(request: Request, exc: Exception):
 
 @app.get("/healthz")
 async def live_health() -> dict[str, str]:
-    return {"status": "ok", "service": "hook-studio"}
+    info = build_info()
+    info["schema_version"] = str(app.state.db.schema_version())
+    return {"status": "ok", "service": "hook-studio", **info}
 
 
 @app.get("/api/health")
