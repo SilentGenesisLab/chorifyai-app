@@ -14,7 +14,14 @@ def test_video_policy_records_all_hard_checks():
     trace = policy.require(prompt=prompt, duration=4, ratio="9:16", reference_urls=["https://x/p.png"], slot_manifest=[{"slot": 1, "url": "https://x/p.png", "role": "产品身份"}])
     assert trace.passed
     assert len(trace.checks) == 6
-    assert trace.version == "1.0.0"
+    assert trace.version == "2.0.0"
+
+
+def test_video_policy_accepts_every_supported_single_shot_duration():
+    policy = VideoSkillPolicy.from_file(POLICY)
+    prompt = "美区厨房中，当用户按下产品按钮，随后产品打开，同时保留原生环境音和动作音，不出现水印。"
+    for duration in range(4, 16):
+        assert policy.require(prompt=prompt, duration=duration, ratio="9:16").passed
 
 
 def test_video_policy_fails_closed_without_audio_and_manifest():

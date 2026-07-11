@@ -89,8 +89,8 @@ class VideoSkillPolicy:
         action_ok = len(prompt.strip()) >= int(self.config.get("prompt_min_length", 1)) and any(term in prompt for term in action_terms)
         checks.append(PolicyCheck("action-causality", "pass" if action_ok else "fail", message="请写清主体动作及动作先后关系"))
 
-        duration_ok = duration in self.config.get("duration_seconds", [4, 5]) and ratio == self.config.get("ratio", "9:16")
-        checks.append(PolicyCheck("duration-ratio", "pass" if duration_ok else "fail", message="视频仅支持4-5秒、9:16竖屏", evidence={"duration": duration, "ratio": ratio}))
+        duration_ok = duration in self.config.get("duration_seconds", list(range(4, 16))) and ratio == self.config.get("ratio", "9:16")
+        checks.append(PolicyCheck("duration-ratio", "pass" if duration_ok else "fail", message="单镜视频仅支持4-15秒、9:16竖屏", evidence={"duration": duration, "ratio": ratio}))
 
         audio_terms = self.config.get("required_audio_terms", [])
         audio_ok = all(term in prompt for term in audio_terms)
