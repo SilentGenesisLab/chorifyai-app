@@ -366,6 +366,48 @@ ALTER TABLE legacy_storyboard_migrations ADD COLUMN normalized_at TEXT;
 """
 
 
+SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS image_edit_contracts (
+  id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  task_id TEXT NOT NULL UNIQUE REFERENCES task_runs(id),
+  router_version TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  fidelity_label TEXT NOT NULL,
+  base_asset_id TEXT NOT NULL REFERENCES assets(id),
+  mask_asset_id TEXT REFERENCES assets(id),
+  annotation_asset_id TEXT REFERENCES assets(id),
+  prompt_user TEXT NOT NULL,
+  prompt_final TEXT NOT NULL,
+  must_preserve_json TEXT NOT NULL DEFAULT '[]',
+  provider_requirements_json TEXT NOT NULL DEFAULT '[]',
+  fallback_plan_json TEXT NOT NULL DEFAULT '[]',
+  capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_image_edit_contracts_client_created
+  ON image_edit_contracts(client_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS asset_versions (
+  id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL UNIQUE REFERENCES assets(id),
+  parent_asset_id TEXT REFERENCES assets(id),
+  edit_contract_id TEXT REFERENCES image_edit_contracts(id),
+  version INTEGER NOT NULL,
+  relation TEXT NOT NULL,
+  selected INTEGER NOT NULL DEFAULT 0,
+  qc_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_asset_versions_parent
+  ON asset_versions(client_id, parent_asset_id, version);
+"""
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -649,6 +691,19 @@ class Database:
                     )
                     conn.execute("PRAGMA user_version=5")
                     conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                applied.add(5)
+            if 6 not in applied:
+                try:
+                    conn.executescript(
+                        "BEGIN IMMEDIATE;\n"
+                        + SCHEMA_V6
+                        + "\nINSERT INTO schema_migrations(version, applied_at) "
+                        "VALUES(6, strftime('%Y-%m-%dT%H:%M:%fZ','now'));\n"
+                        "PRAGMA user_version=6;\nCOMMIT;"
+                    )
                 except Exception:
                     conn.rollback()
                     raise

@@ -1,6 +1,6 @@
 export type Mode = 'image' | 'video'
 export type JobStatus = 'queued' | 'running' | 'waiting_confirmation' | 'succeeded' | 'failed' | 'cancelled'
-export type ToolMode = 'create_video' | 'create_image' | 'reference_remix' | 'batch_production' | 'reverse_analysis' | 'replace_content'
+export type ToolMode = 'create_video' | 'create_image' | 'edit_image' | 'reference_remix' | 'batch_production' | 'reverse_analysis' | 'replace_content'
 export type AttachmentKind = 'image' | 'video' | 'audio' | 'document' | 'text' | 'link' | 'file'
 export type MessageKind = 'text' | 'question' | 'status' | 'storyboard' | 'media' | 'error' | 'requirement' | 'coverage' | 'approval' | 'delivery'
 

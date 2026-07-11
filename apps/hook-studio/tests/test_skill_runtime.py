@@ -46,18 +46,17 @@ def test_storyboard_compiler_produces_complete_shot_contract_and_panels():
     assert contract.action_start and contract.action_trigger and contract.action_result
     assert contract.shot_size and contract.camera_angle and contract.composition
     panels = PanelPlanner().plan(contract)
-    assert [panel.role for panel in panels] == ["start", "action", "result"]
+    assert [panel.role for panel in panels] == ["start", "result"]
     assert all(panel.required for panel in panels)
 
 
-@pytest.mark.parametrize("missing", ["panels", "clean", "panel_approval", "shot_approval", "animatic"])
+@pytest.mark.parametrize("missing", ["panels", "clean", "panel_approval", "shot_approval"])
 def test_gate_fails_closed_for_incomplete_storyboard(missing):
     snapshot = _snapshot()
     if missing == "panels": snapshot["shots"][0]["panels"] = []
     if missing == "clean": snapshot["shots"][0]["panels"][0]["selected_asset_id"] = None
     if missing == "panel_approval": snapshot["shots"][0]["panels"][0]["approved"] = False
     if missing == "shot_approval": snapshot["shots"][0]["approved"] = False
-    if missing == "animatic": snapshot["animatic_status"] = "ready"
     with pytest.raises(ProductionGateError):
         ShotGateValidator().require(snapshot)
 
@@ -68,6 +67,15 @@ def test_gate_accepts_complete_storyboard_with_tenant_scoped_ready_assets():
         resolve_reference=lambda _kind, _url: None,
     )
     assert result == {"passed": True, "shot_count": 1, "panel_count": 3}
+
+
+def test_gate_allows_no_animatic_but_requires_confirmation_when_one_exists():
+    snapshot = _snapshot()
+    snapshot["animatic_status"] = "missing"
+    assert ShotGateValidator().require(snapshot)["passed"]
+    snapshot["animatic_status"] = "ready"
+    with pytest.raises(ProductionGateError, match="动态预演"):
+        ShotGateValidator().require(snapshot)
 
 
 @pytest.mark.parametrize("manifest", [

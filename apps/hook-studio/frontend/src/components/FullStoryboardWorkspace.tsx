@@ -4,7 +4,7 @@ import {
   Clock3, Download, Eye, FileText, Film, GalleryHorizontalEnd, Image as ImageIcon,
   Layers3, Link as LinkIcon, ListChecks, LoaderCircle, LockKeyhole, LogOut, Menu,
   MessageSquareText, PackageCheck, PanelRightOpen, Paperclip, Play, Plus, RefreshCw,
-  Search, Send, Table2, Timer, Video, Volume2, X,
+  ScanLine, Search, Send, Table2, Timer, Video, Volume2, X,
 } from 'lucide-react'
 import { ApiError, api } from '../api'
 import {
@@ -32,6 +32,7 @@ const EMPTY_QUEUES: QueueSnapshot = {
 const TOOLS: Array<{ id: ToolMode; label: string; icon: typeof Video; needsDuration: boolean }> = [
   { id: 'create_video', label: '视频生产', icon: Video, needsDuration: true },
   { id: 'create_image', label: '图片生产', icon: ImageIcon, needsDuration: false },
+  { id: 'edit_image', label: '局部修图', icon: ScanLine, needsDuration: false },
   { id: 'reference_remix', label: '参控复刻', icon: Layers3, needsDuration: true },
   { id: 'batch_production', label: '批量生产', icon: GalleryHorizontalEnd, needsDuration: true },
   { id: 'reverse_analysis', label: '逆向分析', icon: Search, needsDuration: false },
@@ -39,6 +40,7 @@ const TOOLS: Array<{ id: ToolMode; label: string; icon: typeof Video; needsDurat
 ]
 
 const CAPABILITY_STAGES = ['素材理解', '联网研究', '商业节拍', '分镜设计', '连续性校验', '参考帧制作', '动态预演', '生产质检']
+const IMAGE_CAPABILITY_STAGES = ['图片需求', '素材与区域', '编辑路由', '生成处理', '像素合成', '生产质检']
 
 type PreviewItem = MediaAsset & { label?: string }
 type StreamState = 'idle' | 'connecting' | 'live' | 'recovering'
@@ -79,6 +81,9 @@ export default function FullStoryboardWorkspace({ session, onLogout }: { session
   const [search, setSearch] = useState('')
   const [confirmProduction, setConfirmProduction] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const editSourceInput = useRef<HTMLInputElement>(null)
+  const editMaskInput = useRef<HTMLInputElement>(null)
+  const editAnnotationInput = useRef<HTMLInputElement>(null)
   const messageEnd = useRef<HTMLDivElement>(null)
   const submissionRef = useRef<{ fingerprint: string; key: string } | null>(null)
 
@@ -178,6 +183,10 @@ export default function FullStoryboardWorkspace({ session, onLogout }: { session
         }
         const board = normalizeStoryboard(snapshot.storyboard || (snapshot.shots ? snapshot : undefined))
         if (board) setStoryboard(board)
+        const eventStatus = String(record(snapshot.task).status || snapshot.status || event.state || '')
+        if (['succeeded', 'failed', 'cancelled'].includes(eventStatus) && activeId) {
+          window.setTimeout(() => loadConversation(activeId, true), 120)
+        }
         if (!board && /storyboard|panel|approval|animatic|snapshot|task|provider|completed|failed/.test(event.type)) {
           window.clearTimeout(eventRefreshTimer)
           eventRefreshTimer = window.setTimeout(async () => {
@@ -191,7 +200,7 @@ export default function FullStoryboardWorkspace({ session, onLogout }: { session
       },
     })
     return () => { closed = true; window.clearTimeout(recoveryTimer); window.clearTimeout(eventRefreshTimer); close() }
-  }, [activeTask?.id, activeTask?.status, storyboardId, loadStoryboard, messageStoryboard])
+  }, [activeTask?.id, activeTask?.status, storyboardId, loadStoryboard, loadConversation, messageStoryboard, activeId])
 
   useEffect(() => { messageEnd.current?.scrollIntoView({ block: 'end' }) }, [messages, askingDuration, events.length])
 
@@ -247,6 +256,9 @@ export default function FullStoryboardWorkspace({ session, onLogout }: { session
       setDraft(''); setFiles([]); setLinks([]); setDuration('')
       submissionRef.current = null
       if (fileInput.current) fileInput.current.value = ''
+      for (const input of [editSourceInput.current, editMaskInput.current, editAnnotationInput.current]) {
+        if (input) input.value = ''
+      }
       await loadConversation(conversationId, true)
       const rows = (await api.conversations()).map(normalizeConversation).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       setConversations(rows)
@@ -336,9 +348,18 @@ export default function FullStoryboardWorkspace({ session, onLogout }: { session
         <div className="composer">
           <textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }} placeholder="描述产品、受众、卖点和希望呈现的结果，也可以上传文本、图片、视频或链接" aria-label="创作需求" />
           <div className="composer-toolbar"><div className="composer-tools">
-            <label className="tool-select"><currentTool.icon /><select value={tool} onChange={event => { setTool(event.target.value as ToolMode); setDuration('') }}>{TOOLS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown /></label>
-            <button onClick={() => fileInput.current?.click()} title="添加文件"><Paperclip /></button>
-            <input ref={fileInput} hidden multiple type="file" accept="image/*,video/*,audio/*,.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.html,.srt,.vtt" onChange={event => setFiles(current => [...current, ...Array.from(event.target.files || [])])} />
+            <label className="tool-select"><currentTool.icon /><select value={tool} onChange={event => { setTool(event.target.value as ToolMode); setDuration(''); setFiles([]) }}>{TOOLS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown /></label>
+            {tool === 'edit_image' ? <>
+              <button onClick={() => editSourceInput.current?.click()} title="选择原图"><ImageIcon /></button>
+              <input ref={editSourceInput} hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) setFiles(current => [...current.filter(item => !item.name.startsWith('source-')), taggedFile(file, 'source')]) }} />
+              <button onClick={() => editMaskInput.current?.click()} title="选择PNG蒙版"><ScanLine /></button>
+              <input ref={editMaskInput} hidden type="file" accept="image/png" onChange={event => { const file = event.target.files?.[0]; if (file) setFiles(current => [...current.filter(item => !item.name.startsWith('mask-')), taggedFile(file, 'mask')]) }} />
+              <button onClick={() => editAnnotationInput.current?.click()} title="选择定位说明图"><BadgeCheck /></button>
+              <input ref={editAnnotationInput} hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) setFiles(current => [...current.filter(item => !item.name.startsWith('annotation-')), taggedFile(file, 'annotation')]) }} />
+            </> : <>
+              <button onClick={() => fileInput.current?.click()} title="添加文件"><Paperclip /></button>
+              <input ref={fileInput} hidden multiple type="file" accept="image/*,video/*,audio/*,.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.html,.srt,.vtt" onChange={event => setFiles(current => [...current, ...Array.from(event.target.files || [])])} />
+            </>}
             <button onClick={() => setShowLinkInput(current => !current)} title="添加链接"><LinkIcon /></button>
             {currentTool.needsDuration && <label className="duration-select" title="成片 4-60 秒，系统按镜头拆成 4-15 秒生产"><Clock3 /><input value={duration} onChange={event => setDuration(event.target.value)} type="number" min="4" max="60" step="1" placeholder="4-60s" aria-label="成片时长（秒）" /></label>}
           </div><button className="send-button" onClick={() => sendMessage()} disabled={sending || (!draft.trim() && !files.length && !links.length)} title="发送">{sending ? <LoaderCircle className="spin" /> : <Send />}</button></div>
@@ -375,9 +396,10 @@ function CoveragePills({ storyboard, compact = false }: { storyboard: Storyboard
 
 function RequirementCard({ messages, storyboard }: { messages: ChatMessage[]; storyboard?: Storyboard }) {
   const userMessage = [...messages].reverse().find(message => message.role === 'user')
+  const delivered = messages.some(message => message.role !== 'user' && message.assets.length > 0)
   if (!userMessage && !storyboard?.brief) return null
   return <article className="fs-dialog-card fs-requirement-card">
-    <header><div><MessageSquareText /><span>需求理解</span></div><em>{storyboard ? '已形成生产结构' : '正在理解'}</em></header>
+    <header><div><MessageSquareText /><span>需求理解</span></div><em>{storyboard ? '已形成生产结构' : delivered ? '已确认并完成' : '正在理解'}</em></header>
     <p>{storyboard?.brief || userMessage?.text || '已接收本次素材与要求。'}</p>
     <div className="fs-fact-row"><span>比例 <b>9:16</b></span>{storyboard && <><span>成片 <b>{storyboard.totalDurationSeconds}s</b></span><span>镜头 <b>{storyboard.shots.length}</b></span></>}</div>
   </article>
@@ -394,13 +416,20 @@ function CapabilityProgressCard({ task, storyboard, events, streamState, queues 
   const elapsed = task ? task.waitingSeconds || Math.max(0, Math.floor((Date.now() - new Date(task.createdAt).getTime()) / 1000)) : 0
   const providerWaiting = Boolean(latest?.indeterminate || latest?.type === 'provider.waiting')
   const shownElapsed = latest?.waitedSeconds ?? elapsed
-  const hasMeasuredProgress = Boolean(task?.progress) && !providerWaiting
+  const terminal = Boolean(task && ['succeeded', 'failed', 'cancelled'].includes(task.status))
+  const hasMeasuredProgress = (Boolean(task?.progress) || terminal) && !providerWaiting
   const supplied = storyboard?.skillStages || []
   const currentIndex = stageIndex(task?.stage || latest?.publicLabel || '')
-  const stages: SkillStage[] = supplied.length ? supplied : CAPABILITY_STAGES.map((label, index) => ({ id: `public-stage-${index}`, label, state: index === currentIndex ? 'running' as const : 'pending' as const }))
+  const fallbackStages = task?.tool === 'create_image' || task?.tool === 'edit_image' ? IMAGE_CAPABILITY_STAGES : CAPABILITY_STAGES
+  const stages: SkillStage[] = supplied.length ? supplied : fallbackStages.map((label, index) => ({
+    id: `public-stage-${index}`, label,
+    state: task?.status === 'succeeded' ? 'succeeded' as const : task?.status === 'failed' && index === currentIndex ? 'failed' as const : index < currentIndex ? 'succeeded' as const : index === currentIndex ? 'running' as const : 'pending' as const,
+  }))
+  const liveTitle = task?.status === 'succeeded' ? '生产完成' : task?.status === 'failed' ? '任务未完成' : latest?.publicLabel || task?.stage || '准备能力链'
+  const liveMessage = task?.status === 'succeeded' ? '结果已进入右侧成品库，可预览、选择和批量下载。' : task?.status === 'failed' ? task.errorMessage || '任务已保留，可修改后重试。' : latest?.message || (task?.status === 'queued' ? `正在排队${task.queuePosition ? `，前方 ${Math.max(0, task.queuePosition - 1)} 个任务` : ''}` : '系统正按镜头复杂度生成关键画面、动作序列或动态预演')
   return <article className="fs-dialog-card fs-progress-card" data-testid="execution-card">
-    <header><div><CircleDashed className={task?.status === 'running' ? 'spin' : ''} /><span>任务执行</span></div><StreamBadge state={streamState} /></header>
-    <div className="fs-live-message"><b>{latest?.publicLabel || task?.stage || '准备能力链'}</b><span>{latest?.message || (task?.status === 'queued' ? `正在排队${task.queuePosition ? `，前方 ${Math.max(0, task.queuePosition - 1)} 个任务` : ''}` : '每个镜头都会生成故事板画格和干净参考帧')}</span><small>已等待 {formatDuration(shownElapsed)} · {task?.heartbeatAt || latest?.heartbeatAt ? '心跳正常' : streamState === 'live' ? '事件连接正常' : '正在恢复连接'}</small></div>
+    <header><div><CircleDashed className={task?.status === 'running' ? 'spin' : ''} /><span>任务执行</span></div>{terminal ? <StatusPill status={task?.status || ''} /> : <StreamBadge state={streamState} />}</header>
+    <div className="fs-live-message"><b>{liveTitle}</b><span>{liveMessage}</span><small>{terminal ? `总用时 ${formatDuration(shownElapsed)}` : `已等待 ${formatDuration(shownElapsed)} · ${task?.heartbeatAt || latest?.heartbeatAt ? '心跳正常' : streamState === 'live' ? '事件连接正常' : '正在恢复连接'}`}</small></div>
     <div className={hasMeasuredProgress ? 'fs-task-meter' : 'fs-task-meter is-indeterminate'} aria-label={hasMeasuredProgress ? '任务进度' : '任务等待中，无虚假百分比'}><i style={hasMeasuredProgress ? { width: `${task?.progress}%` } : undefined} /></div>
     <div className="fs-queue-snapshot" data-testid="queue-snapshot">
       <div><span><ImageIcon />图片队列</span><b>等待 {queues.imageQueued}</b><b>执行 {queues.imageRunning}</b><b>成功 {queues.imageSucceeded}</b><b>失败 {queues.imageFailed}</b></div>
@@ -526,7 +555,7 @@ function FilmstripView({ storyboard, shot, panelId, setPanelId, frameMode, setFr
 
 function AnimaticView({ storyboard, selectedShotId, onSelectShot, onMutate }: { storyboard: Storyboard; selectedShotId: string; onSelectShot: (id: string) => void; onMutate: (action: () => Promise<unknown>) => Promise<void> }) {
   return <div className="fs-animatic" data-testid="animatic-view">
-    <section className="fs-animatic-player">{storyboard.animatic?.url ? <video src={storyboard.animatic.url} controls preload="metadata" /> : <div><Play /><b>动态预演尚未生成</b><span>故事板与干净参考帧齐备后，可按真实镜头时长生成。</span></div>}</section>
+    <section className="fs-animatic-player">{storyboard.animatic?.url ? <video src={storyboard.animatic.url} controls preload="metadata" /> : <div><Play /><b>动态预演为可选确认层</b><span>关键画面已经能说明预期时，可直接确认生产；需要核对节奏时再生成预演。</span></div>}</section>
     <div className="fs-animatic-meta"><div><b>动态预演 {storyboard.animatic ? `v${storyboard.animatic.version}` : ''}</b><span>{storyboard.totalDurationSeconds}s · {storyboard.shots.length} 镜 · 临时声音与节奏确认</span></div>{storyboard.animatic ? <button className={storyboard.animatic.confirmed ? 'is-confirmed' : 'primary-action'} disabled={storyboard.animatic.confirmed} onClick={() => onMutate(() => api.decideStoryboard(storyboard.id, { scope: 'animatic', scopeId: storyboard.animatic?.id || 'animatic', decision: 'approved', expectedVersion: storyboard.revision }))}>{storyboard.animatic.confirmed ? <><Check />已确认</> : <><CheckCircle2 />确认节奏</>}</button> : <button className="primary-action" onClick={() => onMutate(() => api.createAnimatic(storyboard.id, storyboard.revision))}><Play />生成预演</button>}</div>
     <div className="fs-timeline" aria-label="动态预演时间线"><div className="fs-timeline-ruler"><span>00:00</span><span>{formatTime(storyboard.totalDurationSeconds)}</span></div><div className="fs-timeline-track">{storyboard.shots.map(shot => <button key={shot.id} className={selectedShotId === shot.id ? 'is-active' : ''} style={{ flexGrow: Math.max(1, shot.durationSeconds) }} onClick={() => onSelectShot(shot.id)}><span>{shot.code}</span><b>{shot.storyFunction}</b><small>{shot.durationSeconds}s</small></button>)}</div><div className="fs-audio-track"><Volume2 /><span>临时 VO / 音乐 / 音效波形</span><i /></div></div>
   </div>
@@ -563,7 +592,7 @@ function ProductionConfirm({ storyboard, onCancel, onConfirm }: { storyboard: St
 }
 
 function DurationQuestion({ onChoose, onCustom }: { onChoose: (seconds: number) => void; onCustom: () => void }) {
-  return <article className="fs-message assistant duration-question"><div className="message-author">Hook Studio</div><div className="message-text">这支成片准备做多长？可直接填写 4-60 秒，系统会自动拆成 4-15 秒镜头，并为每个镜头制作故事板。</div><div className="duration-options">{[6, 10, 15, 30, 60].map(seconds => <button key={seconds} onClick={() => onChoose(seconds)}>{seconds}s</button>)}<button onClick={onCustom}>直接填写</button></div></article>
+  return <article className="fs-message assistant duration-question"><div className="message-author">Hook Studio</div><div className="message-text">这支成片准备做多长？可直接填写 4-60 秒，系统会自动拆成 4-15 秒镜头，并按复杂度返回关键画面、动作序列或动态预演。</div><div className="duration-options">{[6, 10, 15, 30, 60].map(seconds => <button key={seconds} onClick={() => onChoose(seconds)}>{seconds}s</button>)}<button onClick={onCustom}>直接填写</button></div></article>
 }
 
 function StreamBadge({ state }: { state: StreamState }) {
@@ -572,7 +601,11 @@ function StreamBadge({ state }: { state: StreamState }) {
 }
 
 function StatusPill({ status }: { status: string }) { return <em className={`fs-status is-${status}`}>{statusText(status)}</em> }
-function statusText(status: string) { return ({ draft: '待绘制', drawing: '绘制中', generating: '生成中', review: '待审核', pending: '待审核', approved: '已批准', confirmed: '已确认', revision_required: '需修改', locked: '已锁定', producing: '生产中', qc: '质检中', completed: '已通过', failed: '可重试' } as Record<string, string>)[status] || '处理中' }
+function statusText(status: string) { return ({ queued: '排队中', running: '执行中', waiting_confirmation: '待确认', succeeded: '已完成', cancelled: '已取消', draft: '待绘制', drawing: '绘制中', generating: '生成中', review: '待审核', pending: '待审核', approved: '已批准', confirmed: '已确认', revision_required: '需修改', locked: '已锁定', producing: '生产中', qc: '质检中', completed: '已通过', failed: '可重试' } as Record<string, string>)[status] || '处理中' }
+
+function taggedFile(file: File, role: 'source' | 'mask' | 'annotation') {
+  return new File([file], `${role}-${file.name}`, { type: file.type, lastModified: file.lastModified })
+}
 function ContractRow({ label, value, tone }: { label: string; value: string; tone?: string }) { return <div className={tone ? `is-${tone}` : ''}><span>{label}</span><p>{value}</p></div> }
 function shotForm(shot: StoryboardShot) { return { story_function: shot.storyFunction, description: shot.description, duration_seconds: String(shot.durationSeconds), camera_move: shot.cameraMove, action_start: shot.actionStart, action_end: shot.actionEnd, audio: shot.audio } }
 function formatTime(seconds: number) { const safe = Math.max(0, Math.round(seconds)); return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}` }
@@ -608,5 +641,5 @@ function QuotaLine({ icon, label, used, limit }: { icon: React.ReactNode; label:
   return <div className="quota-line"><div>{icon}<span>{label}</span><b>{used}/{limit}</b></div><i><span style={{ width: `${percent}%` }} /></i></div>
 }
 
-function EmptyConversation() { return <div className="empty-conversation"><div className="empty-mark">HS</div><h2>开始一个视频任务</h2><p>上传产品素材或描述目标。系统会先确认需求，再逐镜制作故事板与动态预演。</p><div><span><Paperclip />多格式素材</span><span><Film />全镜故事板</span><span><Timer />动态预演</span></div></div> }
+function EmptyConversation() { return <div className="empty-conversation"><div className="empty-mark">HS</div><h2>开始一个图片或视频任务</h2><p>上传素材或描述目标。系统会先确认需求，再按复杂度返回关键画面、动作序列或动态预演。</p><div><span><Paperclip />多格式素材</span><span><Film />镜头确认</span><span><Timer />可选动态预演</span></div></div> }
 function SmallLoader({ label }: { label: string }) { return <div className="small-loader"><LoaderCircle className="spin" /><span>{label}</span></div> }

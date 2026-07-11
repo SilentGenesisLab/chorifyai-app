@@ -119,7 +119,11 @@ class GenerationService:
             await self._event("generate", values)
             if self.queues is None:
                 raise RuntimeError("generation queues are not bound")
-            await self.queues.enqueue(command.mode, job_id)
+            enqueue = self.queues.enqueue
+            if "tenant_id" in inspect.signature(enqueue).parameters:
+                await enqueue(command.mode, job_id, tenant_id=command.client_id)
+            else:
+                await enqueue(command.mode, job_id)
         except Exception:
             if command.mode == "video":
                 await self._quota("release_failed", command.client_id, command.client_video_limit)

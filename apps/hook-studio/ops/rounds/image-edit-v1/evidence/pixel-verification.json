@@ -1,0 +1,11 @@
+{
+  "source": "source.png",
+  "provider_output": "direct-edit.png",
+  "final_output": "composited-edit.png",
+  "outside_mask_pixels": 849100,
+  "outside_mask_changed_pixels": 0,
+  "inside_mask_pixels": 72500,
+  "inside_mask_changed_pixels": 72489,
+  "inside_change_ratio": 0.999848,
+  "verdict": "PASS"
+}

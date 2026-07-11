@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hook Studio 图片生产路由"
+  short_description: "把电商图、UI概念、产品设计、工业概念和局部编辑编译为可执行生产合同"
+  default_prompt: "根据用户素材和目标，生成图片生产合同、能力路由、提示包、降级方案和QC门禁。"

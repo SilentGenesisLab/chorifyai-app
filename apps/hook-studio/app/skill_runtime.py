@@ -10,12 +10,12 @@ from app.storyboard_runtime import PanelContract, ShotContract
 from app.url_policy import is_sendable_media_url
 
 
-SKILL_PACK_VERSION = "full-storyboard-v1.0.0"
+SKILL_PACK_VERSION = "adaptive-storyboard-v1.1.0"
+IMAGE_ROUTER_VERSION = "1.0.0"
 REFERENCE_MANIFEST_FIELDS = frozenset({
     "kind", "slot", "url", "role", "controls", "must_not_control",
 })
 REFERENCE_MANIFEST_KINDS = {"image": 9, "video": 3}
-REQUIRED_PANEL_ROLES = frozenset({"start", "action", "result"})
 REQUIRED_SHOT_TEXT_FIELDS = (
     "story_function", "visual", "shot_size", "camera_angle", "camera_height",
     "lens_feel", "composition", "action_start", "action_trigger", "action_result",
@@ -44,6 +44,76 @@ class BriefCompiler:
         return {"brief": prompt.strip(), "context": context.strip(), "ratio": "9:16"}
 
 
+class ImageRouterCompiler:
+    skill_id = "hook-studio-image-router"
+    version = IMAGE_ROUTER_VERSION
+
+    DOMAIN_HINTS = {
+        "ecommerce": ("电商", "商品图", "主图", "详情页", "亚马逊", "amazon", "pdp", "sku", "包装"),
+        "ui_ux": ("ui", "ux", "界面", "网页", "app", "dashboard", "落地页", "原型"),
+        "industrial_design": ("工业设计", "结构", "机构", "制造", "装配", "爆炸图", "剖面", "cad"),
+        "product_design": ("产品设计", "cmf", "材质", "概念产品", "外观设计"),
+        "storyboard": ("故事板", "分镜", "镜头预览", "storyboard"),
+    }
+
+    def compile(
+        self, prompt: str, *, action: str = "generate",
+        assets: list[dict[str, Any]] | None = None,
+        has_mask: bool = False, has_annotation: bool = False,
+    ) -> dict[str, Any]:
+        normalized = prompt.strip()
+        lowered = normalized.lower()
+        domain = next((
+            key for key, hints in self.DOMAIN_HINTS.items()
+            if any(hint in lowered for hint in hints)
+        ), "general")
+        fidelity = "LOCAL_EDIT" if action == "edit" else (
+            "SOURCE_TRUE" if domain == "ecommerce" and assets else
+            "CONCEPT_ONLY" if domain in {"ui_ux", "product_design", "industrial_design"} else
+            "REFERENCE_FAITHFUL" if assets else "CONCEPT_ONLY"
+        )
+        aspect_ratio = next((ratio for ratio in ("1:1", "4:5", "3:4", "9:16", "16:9") if ratio in lowered), "9:16")
+        role_priority = {"edit_target": 0, "annotation": 1, "reference": 2}
+        visual_assets = sorted(
+            (asset for asset in (assets or []) if asset.get("role") != "mask"),
+            key=lambda asset: role_priority.get(str(asset.get("role") or "reference"), 2),
+        )
+        role_lines = [
+            f"图{index + 1}只作为{asset.get('role') or '参考素材'}。"
+            for index, asset in enumerate(visual_assets)
+        ]
+        preserve = ["未指定主体", "结构", "材质", "光线", "透视", "构图", "已有准确文字"]
+        if domain == "ecommerce":
+            preserve = ["SKU外形", "颜色", "材质", "比例", "结构", "包装原文"]
+        elif domain == "ui_ux":
+            preserve = ["信息层级", "真实文案", "组件状态", "可读性", "设备画幅"]
+        elif domain in {"product_design", "industrial_design"}:
+            preserve = ["已确认轮廓", "接口位置", "比例", "材料逻辑", "人体工学约束"]
+        annotation_rule = ""
+        if has_annotation:
+            annotation_rule = "定位图中的文字、箭头、框线只说明修改位置，不得出现在结果中。"
+        mask_rule = "蒙版单独定义允许修改区域，不占图片引用槽位；其他像素由系统回填原图。" if has_mask else ""
+        truth_label = "这是概念视觉，不得宣称为可制造CAD或可运行UI。" if fidelity == "CONCEPT_ONLY" else ""
+        final_prompt = "".join(role_lines) + mask_rule + annotation_rule + normalized + "。必须保持：" + "、".join(preserve) + "。" + truth_label
+        return {
+            "router_version": self.version,
+            "action": action,
+            "domain": domain,
+            "fidelity_label": fidelity,
+            "aspect_ratio": aspect_ratio,
+            "asset_roles": list(assets or []),
+            "must_preserve": preserve,
+            "prompt_final": final_prompt,
+            "provider_requirements": ["server_only", "image_edit" if action == "edit" else "image_generate"],
+            "fallback_plan": ["reference_repaint", "mask_pixel_composite"] if action == "edit" else ["single_change_regenerate"],
+            "qc_contract": {
+                "outside_mask_pixels_unchanged": bool(has_mask),
+                "reject_annotation_leak": bool(has_annotation),
+                "fidelity_label": fidelity,
+            },
+        }
+
+
 class StoryboardCompiler:
     skill_id = "storyboard-compiler"
     version = "1.0.0"
@@ -54,13 +124,26 @@ class StoryboardCompiler:
 
 class PanelPlanner:
     skill_id = "panel-planner"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def plan(self, shot: ShotContract) -> list[PanelContract]:
+        intent = " ".join((shot.title, shot.visual, shot.story_function, shot.action_trigger)).lower()
+        static_hints = ("静态", "定格", "packshot", "商品主图", "产品特写", "界面展示", "外观概念")
+        complex_hints = ("展开", "折叠", "安装", "拆卸", "弹出", "倒入", "旋转", "切换", "替换", "变形", "前后对比")
+        if any(hint in intent for hint in static_hints):
+            return [PanelContract(
+                "result", 1, "result", True, shot.action_result,
+                {"label": "关键结果", "camera": shot.camera_move, "presentation": "keyframe"},
+            )]
+        if shot.duration_seconds >= 10 or any(hint in intent for hint in complex_hints):
+            return [
+                PanelContract("start", 1, "start", True, shot.action_start, {"label": "动作起点", "camera": shot.camera_move, "presentation": "motion_sequence"}),
+                PanelContract("action", 2, "action", True, shot.action_trigger, {"label": "动作变化", "camera": shot.camera_move, "presentation": "motion_sequence"}),
+                PanelContract("result", 3, "result", True, shot.action_result, {"label": "动作结果", "camera": shot.camera_move, "presentation": "motion_sequence"}),
+            ]
         return [
-            PanelContract("start", 1, "start", True, shot.action_start, {"label": "动作起点", "camera": shot.camera_move}),
-            PanelContract("action", 2, "action", True, shot.action_trigger, {"label": "动作变化", "camera": shot.camera_move}),
-            PanelContract("result", 3, "result", True, shot.action_result, {"label": "动作结果", "camera": shot.camera_move}),
+            PanelContract("start", 1, "start", True, shot.action_start, {"label": "动作起点", "camera": shot.camera_move, "presentation": "before_after"}),
+            PanelContract("result", 2, "result", True, shot.action_result, {"label": "动作结果", "camera": shot.camera_move, "presentation": "before_after"}),
         ]
 
 
@@ -126,15 +209,9 @@ class ShotGateValidator:
                 resolve_reference=resolve_reference, reasons=reasons,
             )
             panels = list(shot.get("panels") or [])
-            roles = {
-                str(panel.get("role") or "") for panel in panels
-                if isinstance(panel, dict) and panel.get("required")
-            }
-            if len(panels) < 3 or not REQUIRED_PANEL_ROLES.issubset(roles):
-                reasons.append(f"{label}缺少start/action/result必需Panel")
             required = [panel for panel in panels if panel.get("required")]
             if not required:
-                reasons.append(f"{label}缺少必需Panel")
+                reasons.append(f"{label}至少需要一个可确认的关键画面")
             for panel in panels:
                 must_send = bool(panel.get("required") or panel.get("send_to_provider"))
                 if not must_send:
@@ -162,8 +239,9 @@ class ShotGateValidator:
                 reasons.append(f"{label}尚未逐镜批准")
         if not snapshot.get("board_approved"):
             reasons.append("整板尚未批准")
-        if snapshot.get("animatic_status") != "confirmed":
-            reasons.append("动态预演尚未确认")
+        animatic_status = snapshot.get("animatic_status")
+        if animatic_status not in {None, "", "missing", "confirmed"}:
+            reasons.append("已生成的动态预演尚未确认")
         if reasons:
             raise ProductionGateError(reasons)
         return {"passed": True, "shot_count": len(shots), "panel_count": sum(len(item.get("panels") or []) for item in shots)}

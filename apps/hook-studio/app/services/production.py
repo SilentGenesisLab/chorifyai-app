@@ -12,10 +12,11 @@ from app.models import EventAction, EventRecord, Mode
 from app.qc import evaluate_video_probe
 from app.services.analysis import ReferenceAnalysisService
 from app.services.audio import AudioReplacementService
-from app.services.media_ops import render_animatic_frames, replace_segment_file
+from app.services.media_ops import composite_masked_image_file, render_animatic_frames, replace_segment_file
 from app.services.planning import normalize_plan, planning_prompt, split_duration
+from app.queues import TenantFairQueue
 from app.skill_runtime import (
-    ApprovalPolicy, BriefCompiler, PanelPlanner, PromptCompiler, ReferenceManifestCompiler, ShotGateValidator,
+    ApprovalPolicy, BriefCompiler, ImageRouterCompiler, PanelPlanner, PromptCompiler, ReferenceManifestCompiler, ShotGateValidator,
     SkillRuntime, StoryboardCompiler,
 )
 
@@ -47,13 +48,14 @@ class ProductionManager:
         self.audio = audio; self.analysis = ReferenceAnalysisService(provider); self.events = events
         self.skill_runtime = SkillRuntime(repository)
         self.brief_compiler = BriefCompiler()
+        self.image_router = ImageRouterCompiler()
         self.storyboard_compiler = StoryboardCompiler()
         self.panel_planner = PanelPlanner()
         self.prompt_compiler = PromptCompiler()
         self.reference_compiler = ReferenceManifestCompiler()
         self.shot_gate = ShotGateValidator()
         self.approval_policy = ApprovalPolicy()
-        self._queues = {"image": asyncio.Queue(), "video": asyncio.Queue()}
+        self._queues = {"image": TenantFairQueue[str](), "video": TenantFairQueue[str]()}
         self._workers: list[asyncio.Task[None]] = []
         self._pending = {"image": set(), "video": set()}
         self._running = {"image": set(), "video": set()}
@@ -87,11 +89,11 @@ class ProductionManager:
         task = self.repository.get_task(task_id)
         if not task:
             return
-        queue_name = "image" if task["kind"] == "image" else "video"
+        queue_name = "image" if task["kind"] in {"image", "image_edit"} else "video"
         async with self._lock:
             if task_id in self._pending[queue_name] or task_id in self._running[queue_name]: return
             self._pending[queue_name].add(task_id)
-        await self._queues[queue_name].put(task_id)
+        await self._queues[queue_name].put(task_id, str(task["client_id"]))
         snapshot = await self.snapshot()
         self.repository.append_workflow_event(
             task_id, client_id=task["client_id"], event_type="queue.snapshot",
@@ -107,7 +109,7 @@ class ProductionManager:
             lane_counts = {
                 (row["lane"], row["status"]): int(row["n"])
                 for row in conn.execute(
-                    """SELECT CASE WHEN kind='image' THEN 'image' ELSE 'video' END lane,
+                    """SELECT CASE WHEN kind IN ('image','image_edit') THEN 'image' ELSE 'video' END lane,
                     status,COUNT(*) n FROM task_runs WHERE deleted_at IS NULL
                     GROUP BY lane,status"""
                 )
@@ -125,11 +127,17 @@ class ProductionManager:
             "concurrency": self.concurrency,
         }
 
+    async def queue_positions(self) -> dict[str, int]:
+        image, video = await asyncio.gather(
+            self._queues["image"].positions(), self._queues["video"].positions(),
+        )
+        return {**image, **video}
+
     async def _worker(self, queue_name: str) -> None:
         queue = self._queues[queue_name]
         while True:
             task_id = await queue.get()
-            if task_id is None: queue.task_done(); return
+            if task_id is None: await queue.task_done(); return
             async with self._lock:
                 self._pending[queue_name].discard(task_id); self._running[queue_name].add(task_id)
             task = self.repository.get_task(task_id)
@@ -148,7 +156,7 @@ class ProductionManager:
                         task_id, client_id=task["client_id"], event_type="queue.settled",
                         payload={"queue": queue_name, "counts": await self.snapshot()},
                     )
-                queue.task_done()
+                await queue.task_done()
 
     async def process(self, task_id: str) -> None:
         task = self.repository.get_task(task_id)
@@ -177,29 +185,170 @@ class ProductionManager:
     async def _plan(self, task: dict[str, Any]) -> None:
         params = task.get("params", {}); kind = task["kind"]; assets = self._task_assets(task)
         self.repository.update_task(task["id"], {"status": "planning", "stage": "analyzing", "progress": 0.08})
-        if kind == "image":
-            reference_urls = [a["storage_uri"] for a in assets if a.get("media_type") == "image" and a.get("storage_uri")]
+        if kind in {"image", "image_edit"}:
+            by_id = {asset["id"]: asset for asset in assets}
+            base_asset = by_id.get(str(params.get("base_asset_id") or ""))
+            mask_asset = by_id.get(str(params.get("mask_asset_id") or ""))
+            annotation_asset = by_id.get(str(params.get("annotation_asset_id") or ""))
+            role_assets = []
+            for asset in assets:
+                role = "reference"
+                if base_asset and asset["id"] == base_asset["id"]: role = "edit_target"
+                elif mask_asset and asset["id"] == mask_asset["id"]: role = "mask"
+                elif annotation_asset and asset["id"] == annotation_asset["id"]: role = "annotation"
+                role_assets.append({"id": asset["id"], "role": role})
+            packet = self.skill_runtime.execute(
+                task_id=task["id"], skill_id=self.image_router.skill_id,
+                skill_version=self.image_router.version, stage="image.contract",
+                public_label="图片生产合同", inputs={"prompt": params.get("prompt"), "assets": role_assets},
+                operation=lambda: self.image_router.compile(
+                    str(params.get("prompt") or "根据参考素材生成图片"),
+                    action="edit" if kind == "image_edit" else "generate",
+                    assets=role_assets, has_mask=mask_asset is not None,
+                    has_annotation=annotation_asset is not None,
+                ), blocking=True,
+            )
+            if kind == "image_edit":
+                if not base_asset:
+                    raise ProductionError("局部修图需要一张原始图片")
+                if not self.repository.get_image_edit_contract(task["id"], client_id=task["client_id"]):
+                    self.repository.create_image_edit_contract(
+                        client_id=task["client_id"], conversation_id=task["conversation_id"], task_id=task["id"],
+                        base_asset_id=base_asset["id"], mask_asset_id=mask_asset["id"] if mask_asset else None,
+                        annotation_asset_id=annotation_asset["id"] if annotation_asset else None,
+                        prompt_user=str(params.get("prompt") or ""), prompt_final=packet["prompt_final"],
+                        router_version=packet["router_version"], domain=packet["domain"],
+                        fidelity_label=packet["fidelity_label"], must_preserve=packet["must_preserve"],
+                        provider_requirements=packet["provider_requirements"], fallback_plan=packet["fallback_plan"],
+                        capability_snapshot={"direct_edit": "pending", "pixel_composite": bool(mask_asset)},
+                    )
+            task["params"] = {**params, "image_contract": packet}
+            self.repository.update_task(task["id"], {
+                "status": "planning", "stage": "image_contract", "progress": 0.18,
+                "params": task["params"],
+            })
             self.repository.reserve(
                 client_id=task["client_id"], resource="image", units=1, task_id=task["id"],
                 client_limit=int(params.get("client_image_limit") or 1000), global_limit=self.global_image_limit,
             )
             try:
                 async with self._image_slots:
-                    generated = await self.provider.generate_image(
-                        prompt=f"{params.get('prompt') or '根据参考素材生成商业图片'}。9:16竖屏，真实商业摄影，无字幕无水印。",
-                        reference_urls=reference_urls[:9], request_id=task["id"], metadata={"task_id": task["id"]},
-                    )
+                    if kind == "image_edit":
+                        if not base_asset or base_asset.get("media_type") != "image" or not base_asset.get("storage_uri"):
+                            raise ProductionError("局部修图需要一张可读取的原始图片")
+                        if mask_asset and (mask_asset.get("media_type") != "image" or not mask_asset.get("storage_uri")):
+                            raise ProductionError("蒙版必须是可读取的PNG图片")
+                        if annotation_asset and (annotation_asset.get("media_type") != "image" or not annotation_asset.get("storage_uri")):
+                            raise ProductionError("定位说明必须是可读取的图片")
+                        contract = self.repository.get_image_edit_contract(task["id"], client_id=task["client_id"])
+                        if contract:
+                            self.repository.update_image_edit_contract(task["id"], status="running")
+                        try:
+                            generated = await self.provider.edit_image(
+                                prompt=packet["prompt_final"], image_url=base_asset["storage_uri"],
+                                mask_url=mask_asset.get("storage_uri") if mask_asset else None,
+                                annotation_url=annotation_asset.get("storage_uri") if annotation_asset else None,
+                                composite_outside_mask=bool(mask_asset), feather_px=int(params.get("feather_px") or 2),
+                                request_id=task["id"], metadata={
+                                    "task_id": task["id"], "router_version": packet["router_version"],
+                                    "domain": packet["domain"], "fidelity_label": packet["fidelity_label"],
+                                },
+                            )
+                            route = "direct_edit"
+                            raw_url = generated.trace.get("provider_image_url") or generated.result_url
+                            if mask_asset and not generated.trace.get("composite_applied"):
+                                if not generated.result_url:
+                                    raise ProductionError("图片编辑未返回可合成结果")
+                                composite = await composite_masked_image_file(
+                                    base_asset["storage_uri"], generated.result_url, mask_asset["storage_uri"],
+                                )
+                                final_url = await self.provider.upload_blob(
+                                    f"image-edit-{task['id']}.png", composite, "image/png",
+                                    stage="image.edit.composite", request_id=task["id"],
+                                )
+                                generated = replace(generated, result_url=final_url, trace={
+                                    **generated.trace, "route": "direct_edit+mask_pixel_composite",
+                                    "composite_applied": True, "hook_composite_applied": True,
+                                })
+                                route = "direct_edit+mask_pixel_composite"
+                        except Exception as direct_error:
+                            fallback_refs = [base_asset["storage_uri"]]
+                            if annotation_asset:
+                                fallback_refs.append(annotation_asset["storage_uri"])
+                            generated = await self.provider.generate_image(
+                                prompt=packet["prompt_final"], reference_urls=fallback_refs,
+                                aspect_ratio=packet["aspect_ratio"], request_id=f"{task['id']}:fallback",
+                                metadata={"task_id": task["id"], "fallback_from": type(direct_error).__name__},
+                            )
+                            raw_url = generated.result_url
+                            route = "reference_repaint"
+                            if mask_asset and raw_url:
+                                composite = await composite_masked_image_file(
+                                    base_asset["storage_uri"], raw_url, mask_asset["storage_uri"],
+                                )
+                                final_url = await self.provider.upload_blob(
+                                    f"image-edit-{task['id']}.png", composite, "image/png",
+                                    stage="image.edit.composite", request_id=task["id"],
+                                )
+                                generated = replace(generated, result_url=final_url, trace={
+                                    **generated.trace, "route": "reference_repaint+mask_pixel_composite",
+                                    "direct_error": type(direct_error).__name__, "composite_applied": True,
+                                })
+                                route = "reference_repaint+mask_pixel_composite"
+                    else:
+                        reference_urls = [a["storage_uri"] for a in assets if a.get("media_type") == "image" and a.get("storage_uri")]
+                        generated = await self.provider.generate_image(
+                            prompt=packet["prompt_final"], reference_urls=reference_urls[:9],
+                            aspect_ratio=packet["aspect_ratio"], request_id=task["id"],
+                            metadata={"task_id": task["id"], "router_version": packet["router_version"], "domain": packet["domain"]},
+                        )
+                        route = "generate"
+                        raw_url = generated.result_url
                 if not generated.result_url:
                     raise ProductionError("图片生成未返回结果")
                 asset = self.repository.create_asset(
-                    client_id=task["client_id"], source_type="generated", media_type="image",
-                    storage_uri=generated.result_url, status="ready", metadata={"task_id": task["id"]},
+                    client_id=task["client_id"], source_type="generated_edit" if kind == "image_edit" else "generated",
+                    media_type="image", storage_uri=generated.result_url, status="ready",
+                    metadata={"task_id": task["id"], "route": route, "image_contract": packet},
                 )
+                raw_asset = None
+                if kind == "image_edit" and raw_url and raw_url != generated.result_url:
+                    raw_asset = self.repository.create_asset(
+                        client_id=task["client_id"], source_type="provider_raw", media_type="image",
+                        storage_uri=raw_url, status="ready", metadata={"task_id": task["id"], "route": route, "hidden": True},
+                    )
+                if kind == "image_edit" and base_asset:
+                    edit_contract = self.repository.get_image_edit_contract(task["id"], client_id=task["client_id"])
+                    contract_id = edit_contract["id"] if edit_contract else None
+                    if raw_asset:
+                        self.repository.record_asset_version(
+                            client_id=task["client_id"], asset_id=raw_asset["id"], parent_asset_id=base_asset["id"],
+                            edit_contract_id=contract_id, relation="provider_raw", qc={"route": route},
+                        )
+                    self.repository.record_asset_version(
+                        client_id=task["client_id"], asset_id=asset["id"], parent_asset_id=base_asset["id"],
+                        edit_contract_id=contract_id, relation="selected", selected=True,
+                        qc={
+                            "route": route,
+                            "outside_mask_preserved": bool(
+                                mask_asset and generated.trace.get("composite_applied")
+                            ),
+                        },
+                    )
+                    if edit_contract:
+                        self.repository.update_image_edit_contract(
+                            task["id"], status="completed", capability_snapshot={
+                                "route": route, "mask_applied": bool(mask_asset),
+                                "annotation_applied": bool(annotation_asset), "trace": generated.trace,
+                            },
+                        )
                 self.repository.commit(task_id=task["id"], resource="image", client_id=task["client_id"])
             except Exception:
+                if kind == "image_edit" and self.repository.get_image_edit_contract(task["id"], client_id=task["client_id"]):
+                    self.repository.update_image_edit_contract(task["id"], status="failed")
                 self.repository.release(task_id=task["id"], resource="image", client_id=task["client_id"])
                 raise
-            await self._complete(task, {"assets": [asset]}, media_assets=[asset])
+            await self._complete(task, {"assets": [asset], "image_contract": packet, "route": route}, media_assets=[asset])
             return
         video_assets = [a for a in assets if a.get("media_type") == "video" and a.get("storage_uri")]
         if kind == "reverse":
@@ -302,7 +451,10 @@ class ProductionManager:
                     "image_asset_id": panels[0]["selected_asset_id"], "panels": panels, "status": "ready",
                 })
                 return row
-            storyboard_rows = list(await asyncio.gather(*(generate_shot_panels(shot) for shot in shots)))
+            # One task submits one storyboard panel at a time. The shared image
+            # semaphore can therefore admit an interactive edit from another tenant.
+            for shot in shots:
+                storyboard_rows.append(await generate_shot_panels(shot))
             storyboard_rows.sort(key=lambda item: int(item.get("ordinal") or 0))
             self.repository.commit(task_id=task["id"], resource="image", client_id=task["client_id"])
         except Exception:
@@ -582,7 +734,7 @@ class ProductionManager:
             )
             self.repository.add_message(
                 task["conversation_id"], role="assistant", kind="status",
-                content_text=f"故事板和动态预演已确认，开始生成 {len(board['shots'])} 个镜头，预计消耗 {units} 条视频额度。",
+                content_text=f"生产合同与镜头预览已确认，开始生成 {len(board['shots'])} 个镜头，预计消耗 {units} 条视频额度。",
                 content={"task_id": task["id"], "video_units": units, "storyboard_id": storyboard_id},
                 client_id=client_id,
             )
@@ -696,10 +848,19 @@ class ProductionManager:
                 )
                 return self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=transcode.result_url, status="ready", metadata={"task_id": task["id"], "variant": variant + 1, "segments": segment_urls, "qc": probe})
 
-            final_assets = list(await asyncio.gather(*(generate_variant(variant) for variant in range(batch_count))))
+            # A batch owns at most one Provider slot at a time. This leaves capacity
+            # for another customer's task instead of placing every variant in flight.
+            final_assets = await self._run_batch_variants(batch_count, generate_variant)
             self.repository.update_task(task["id"], {"status": "assembling", "stage": "assembling", "progress": 0.95})
         self.repository.commit(task_id=task["id"], resource="video", client_id=task["client_id"])
         await self._complete(task, {"assets": final_assets, "target_duration": params.get("duration_seconds")}, media_assets=final_assets)
+
+    @staticmethod
+    async def _run_batch_variants(batch_count: int, generate_variant: Any) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for variant in range(batch_count):
+            results.append(await generate_variant(variant))
+        return results
 
     async def _complete(self, task: dict[str, Any], result: dict[str, Any], *, media_assets: list[dict[str, Any]]) -> None:
         kind = "media" if media_assets else "analysis"
@@ -718,7 +879,7 @@ class ProductionManager:
             )
         if self.events:
             params = task.get("params", {})
-            mode = Mode.IMAGE if task["kind"] == "image" else Mode.VIDEO
+            mode = Mode.IMAGE if task["kind"] in {"image", "image_edit"} else Mode.VIDEO
             urls = [asset.get("storage_uri") for asset in media_assets] or [None]
             video_units = len(self.repository.list_shots(task["id"], client_id=task["client_id"])) * max(1, int(params.get("batch_count") or 1)) if mode is Mode.VIDEO else 0
             for index, url in enumerate(urls):

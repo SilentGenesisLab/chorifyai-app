@@ -266,7 +266,7 @@ export function normalizeStoryboard(value: unknown): Storyboard | undefined {
   if (coverage.cleanReady < coverage.shotTotal) derivedBlockers.push('干净参考帧尚未覆盖全部镜头')
   if (coverage.approvedShots < coverage.shotTotal) derivedBlockers.push('仍有镜头等待批准')
   if (body.board_approved === false) derivedBlockers.push('整板尚未批准')
-  if (!animatic?.confirmed) derivedBlockers.push('动态预演尚未确认')
+  if (animatic && !['', 'missing'].includes(animatic.status) && !animatic.confirmed) derivedBlockers.push('已生成的动态预演尚未确认')
   const blockers = arrayValue(rawGuard.blockers).map(value => publicText(value)).filter(Boolean)
   const guard = {
     canProduce: Boolean(rawGuard.can_produce ?? rawGuard.canProduce ?? body.can_produce ?? (derivedBlockers.length === 0)),

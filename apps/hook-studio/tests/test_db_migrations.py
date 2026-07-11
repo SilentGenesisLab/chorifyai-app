@@ -38,9 +38,10 @@ def test_v1_database_migrates_additively_and_idempotently(tmp_path):
         "storyboards", "storyboard_shots", "activity_events", "training_examples",
         "quota_ledger", "storyboard_panels", "skill_runs", "workflow_events",
         "approval_decisions", "legacy_storyboard_migrations",
+        "image_edit_contracts", "asset_versions",
     }.issubset(tables)
-    assert versions == [1, 2, 3, 4, 5]
-    assert db.schema_version() == user_version == 5
+    assert versions == [1, 2, 3, 4, 5, 6]
+    assert db.schema_version() == user_version == 6
     assert job["prompt_user"] == "旧提示"
     assert foreign_key_errors == []
 
@@ -120,7 +121,7 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert versions == [1, 2, 3, 4, 5]
+    assert versions == [1, 2, 3, 4, 5, 6]
     assert len(panels) == 6
     for shot in shots:
         assert shot["description"].strip()

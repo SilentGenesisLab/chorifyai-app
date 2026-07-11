@@ -217,6 +217,8 @@ async def session(request: Request):
 
 if (DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+if (DIST / "login").exists():
+    app.mount("/demo-assets", StaticFiles(directory=DIST / "login"), name="demo-assets")
 
 
 @app.get("/{path:path}")

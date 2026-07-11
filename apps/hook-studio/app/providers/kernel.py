@@ -195,14 +195,47 @@ class KernelProvider:
             raise ProviderRejected("Kernel上传响应缺少uri")
         return str(uri)
 
-    async def generate_image(self, *, prompt: str, reference_urls: list[str], request_id: str, metadata: dict[str, Any] | None = None) -> ProviderResult:
-        payload = {"prompt": prompt, "reference_urls": reference_urls, "aspect_ratio": "9:16", "external_ref": f"hook-studio:{request_id}", "stage": "image.generate", "metadata": {"hook_job_id": request_id, **(metadata or {})}}
+    async def generate_image(self, *, prompt: str, reference_urls: list[str], request_id: str, metadata: dict[str, Any] | None = None, aspect_ratio: str = "9:16") -> ProviderResult:
+        payload = {"prompt": prompt, "reference_urls": reference_urls, "aspect_ratio": aspect_ratio, "external_ref": f"hook-studio:{request_id}", "stage": "image.generate", "metadata": {"hook_job_id": request_id, **(metadata or {})}}
         data = await self._request("POST", "/capabilities/v1/images/generate", json=payload, request_id=request_id)
         url = data.get("image_url")
         if not url:
             raise ProviderRejected("图片生成响应缺少image_url")
         trace = dict(data.get("provider_trace") or {})
         trace["attempts"] = int(data.get("_hook_attempts", 1))
+        return ProviderResult("success", str(url), trace.get("submit_id"), data.get("local_path"), trace=trace)
+
+    async def edit_image(
+        self, *, prompt: str, image_url: str, request_id: str,
+        mask_url: str | None = None, annotation_url: str | None = None,
+        composite_outside_mask: bool = True, feather_px: int = 2,
+        metadata: dict[str, Any] | None = None,
+    ) -> ProviderResult:
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "mask_url": mask_url,
+            "annotation_url": annotation_url,
+            "quality": "auto",
+            "composite_outside_mask": composite_outside_mask,
+            "feather_px": feather_px,
+            "external_ref": f"hook-studio:{request_id}",
+            "stage": "image.edit",
+            "metadata": {"hook_job_id": request_id, **(metadata or {})},
+        }
+        data = await self._request("POST", "/capabilities/v1/images/edit", json=payload, request_id=request_id, attempts=1)
+        url = data.get("image_url")
+        if not url:
+            raise ProviderRejected("图片编辑响应缺少image_url")
+        trace = dict(data.get("provider_trace") or {})
+        trace.update({
+            "attempts": int(data.get("_hook_attempts", 1)),
+            "provider_image_url": data.get("provider_image_url"),
+            "partial_image_urls": list(data.get("partial_image_urls") or []),
+            "mask_applied": bool(data.get("mask_applied")),
+            "composite_applied": bool(data.get("composite_applied")),
+            "route": "direct_edit",
+        })
         return ProviderResult("success", str(url), trace.get("submit_id"), data.get("local_path"), trace=trace)
 
     async def submit_video(

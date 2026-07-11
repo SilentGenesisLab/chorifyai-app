@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/studio", tags=["workspace"])
 TOOL_MAP = {
     "create_video": ("create", "视频生产"),
     "create_image": ("image", "图片生成"),
+    "edit_image": ("image_edit", "局部修图"),
     "reference_remix": ("replicate", "参控复刻"),
     "batch_production": ("batch", "批量生产"),
     "reverse_analysis": ("reverse", "逆向分析"),
@@ -40,6 +41,7 @@ TOOL_REVERSE = {value[0]: key for key, value in TOOL_MAP.items()}
 STAGE_MAP = {
     "queued": "解析素材",
     "analyzing": "解析素材",
+    "image_contract": "确认修改范围",
     "reverse_analysis": "逆向分析",
     "planning": "分镜规划",
     "storyboard_review": "等待确认",
@@ -128,6 +130,7 @@ def _asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "width": metadata.get("width"),
         "height": metadata.get("height"),
         "job_id": metadata.get("job_id"),
+        "role": "final",
         "created_at": asset.get("created_at"),
     }
 
@@ -215,18 +218,19 @@ def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estima
         "input_count": item.get("input_count"), "output_count": item.get("output_count"),
         "retry_count": item.get("retry_count"), "blocking_reason": item.get("blocking_reason"),
     } for item in board.get("skill_runs") or []]
+    animatic_ready = board.get("animatic_status") in {None, "", "missing", "confirmed"}
     can_produce = bool(
         shots and coverage.get("shots_approved") == coverage.get("shots_total")
         and coverage.get("panels_approved") == coverage.get("panels_total")
         and coverage.get("clean_frames") == coverage.get("shots_total")
-        and board.get("board_approved") and board.get("animatic_status") == "confirmed"
+        and board.get("board_approved") and animatic_ready
     )
     blockers = []
     if coverage.get("shots_approved") != coverage.get("shots_total"): blockers.append("仍有镜头等待批准")
     if coverage.get("panels_approved") != coverage.get("panels_total"): blockers.append("仍有必需Panel等待批准")
     if coverage.get("clean_frames") != coverage.get("shots_total"): blockers.append("clean frame尚未覆盖全部镜头")
     if not board.get("board_approved"): blockers.append("整板尚未批准")
-    if board.get("animatic_status") != "confirmed": blockers.append("动态预演尚未确认")
+    if not animatic_ready: blockers.append("已生成的动态预演尚未确认")
     public_coverage = {
         **coverage,
         "shot_total": coverage.get("shots_total", len(shots)),
@@ -623,6 +627,37 @@ async def send_message(
             "client_video_limit": int(_value(principal, "daily_video_limit", 100)),
             "client_image_limit": int(_value(principal, "daily_image_limit", 1000)),
         }
+        if kind == "image_edit":
+            if not text.strip():
+                raise ValueError("请说明希望修改什么")
+            if not image_assets:
+                raise ValueError("局部修图需要上传一张原始图片")
+            def role_name(asset: dict[str, Any]) -> str:
+                return str(asset.get("filename") or "").strip().lower()
+
+            explicit_sources = [asset for asset in image_assets if role_name(asset).startswith("source-")]
+            mask_assets = [
+                asset for asset in image_assets
+                if not role_name(asset).startswith("source-")
+                and re.match(r"^(?:mask(?:[-_ ]|$)|蒙版(?:[-_ ]|$))", role_name(asset), re.I)
+            ]
+            annotation_assets = [
+                asset for asset in image_assets
+                if not role_name(asset).startswith("source-")
+                and re.match(r"^(?:annotation|annotated|定位|标注|箭头|圈选)(?:[-_ ]|$)", role_name(asset), re.I)
+            ]
+            excluded = {asset["id"] for asset in [*mask_assets, *annotation_assets]}
+            base_assets = explicit_sources or [asset for asset in image_assets if asset["id"] not in excluded]
+            if not base_assets:
+                raise ValueError("请保留一张未标注的原始图片作为编辑目标")
+            if mask_assets and str(mask_assets[0].get("mime_type") or "") != "image/png":
+                raise ValueError("蒙版必须是PNG图片，透明区域表示允许修改")
+            params.update({
+                "base_asset_id": base_assets[0]["id"],
+                "mask_asset_id": mask_assets[0]["id"] if mask_assets else None,
+                "annotation_asset_id": annotation_assets[0]["id"] if annotation_assets else None,
+                "feather_px": 2,
+            })
         if kind == "replace":
             params.update(_replacement_params(text, duration_seconds))
         if kind == "voice_replace":
@@ -841,8 +876,7 @@ async def produce_storyboard(
 async def tasks(request: Request, conversation_id: str | None = None) -> dict[str, Any]:
     client_id = str(_value(_principal(request), "code_id"))
     rows = _repo(request).list_tasks(client_id, conversation_id=conversation_id, limit=500)
-    queued = [row for row in reversed(rows) if row.get("status") == "queued"]
-    positions = {row["id"]: index + 1 for index, row in enumerate(queued)}
+    positions = await request.app.state.production.queue_positions()
     return {"items": [_task_payload(row, positions.get(row["id"])) for row in rows]}
 
 
@@ -851,7 +885,8 @@ async def task(task_id: str, request: Request) -> dict[str, Any]:
     row = _repo(request).get_task(task_id, client_id=str(_value(_principal(request), "code_id")))
     if not row:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "任务不存在"})
-    return _task_payload(row)
+    positions = await request.app.state.production.queue_positions()
+    return _task_payload(row, positions.get(task_id))
 
 
 @router.get("/tasks/{task_id}/events")

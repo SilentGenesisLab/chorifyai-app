@@ -43,5 +43,6 @@ test('管理员可查看客户、用量和服务状态', async ({ page }, testIn
   await expect(page.locator('tbody tr').first()).toBeVisible()
   await expect(page.getByText('全站视频', { exact: true })).toBeVisible()
   await expect(page.getByText('服务健康')).toBeVisible()
+  await expect(page.getByRole('link', { name: '导出完整数据包' })).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('admin-dashboard.png'), fullPage: true })
 })

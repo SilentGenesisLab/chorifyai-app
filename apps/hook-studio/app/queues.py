@@ -4,7 +4,86 @@ import asyncio
 import statistics
 from collections import deque
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Generic, TypeVar
+
+
+T = TypeVar("T")
+
+
+class TenantFairQueue(Generic[T]):
+    """Async round-robin queue that gives each tenant one turn at a time."""
+
+    def __init__(self) -> None:
+        self._lanes: dict[str, deque[T]] = {}
+        self._rotation: deque[str] = deque()
+        self._active: set[str] = set()
+        self._stops = 0
+        self._unfinished = 0
+        self._condition = asyncio.Condition()
+        self._finished = asyncio.Event()
+        self._finished.set()
+
+    async def put(self, item: T | None, tenant_id: str | None = None) -> None:
+        async with self._condition:
+            if item is None:
+                self._stops += 1
+            else:
+                tenant = (tenant_id or "default").strip() or "default"
+                lane = self._lanes.setdefault(tenant, deque())
+                lane.append(item)
+                if tenant not in self._active:
+                    self._rotation.append(tenant)
+                    self._active.add(tenant)
+            self._unfinished += 1
+            self._finished.clear()
+            self._condition.notify()
+
+    async def get(self) -> T | None:
+        async with self._condition:
+            while not self._rotation and self._stops == 0:
+                await self._condition.wait()
+            if not self._rotation and self._stops:
+                self._stops -= 1
+                return None
+            tenant = self._rotation.popleft()
+            lane = self._lanes[tenant]
+            item = lane.popleft()
+            if lane:
+                self._rotation.append(tenant)
+            else:
+                del self._lanes[tenant]
+                self._active.discard(tenant)
+            return item
+
+    async def task_done(self) -> None:
+        async with self._condition:
+            if self._unfinished <= 0:
+                raise ValueError("task_done called too many times")
+            self._unfinished -= 1
+            if self._unfinished == 0:
+                self._finished.set()
+
+    async def join(self) -> None:
+        await self._finished.wait()
+
+    def _ordered_items(self) -> list[T]:
+        lanes = {tenant: deque(items) for tenant, items in self._lanes.items()}
+        rotation = deque(self._rotation)
+        ordered: list[T] = []
+        while rotation:
+            tenant = rotation.popleft()
+            lane = lanes[tenant]
+            ordered.append(lane.popleft())
+            if lane:
+                rotation.append(tenant)
+        return ordered
+
+    async def positions(self) -> dict[T, int]:
+        async with self._condition:
+            return {item: index + 1 for index, item in enumerate(self._ordered_items())}
+
+    async def position(self, item: T) -> int | None:
+        return (await self.positions()).get(item)
 
 
 @dataclass(frozen=True)
@@ -25,7 +104,7 @@ class GenerationQueue:
         self.concurrency = concurrency
         self.handler = handler
         self.fallback_eta_seconds = fallback_eta_seconds
-        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._queue: TenantFairQueue[str] = TenantFairQueue()
         self._pending: list[str] = []
         self._running: set[str] = set()
         self._durations: deque[float] = deque(maxlen=20)
@@ -44,19 +123,19 @@ class GenerationQueue:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
 
-    async def enqueue(self, job_id: str) -> None:
+    async def enqueue(self, job_id: str, *, tenant_id: str = "default") -> None:
         async with self._lock:
             if job_id in self._pending or job_id in self._running:
                 return
             self._pending.append(job_id)
-        await self._queue.put(job_id)
+        await self._queue.put(job_id, tenant_id)
 
     async def _worker(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             job_id = await self._queue.get()
             if job_id is None:
-                self._queue.task_done()
+                await self._queue.task_done()
                 return
             started = loop.time()
             async with self._lock:
@@ -75,15 +154,16 @@ class GenerationQueue:
                     self._running.discard(job_id)
                     if succeeded:
                         self._durations.append(loop.time() - started)
-                self._queue.task_done()
+                await self._queue.task_done()
 
     async def join(self) -> None:
         await self._queue.join()
 
     async def snapshot(self, job_id: str | None = None) -> QueueSnapshot:
         async with self._lock:
-            position = self._pending.index(job_id) + 1 if job_id in self._pending else None
             sample = statistics.median(self._durations) if self._durations else self.fallback_eta_seconds
+        position = await self._queue.position(job_id) if job_id else None
+        async with self._lock:
             eta = None if position is None else max(1, int(((position - 1) // self.concurrency + 1) * sample))
             return QueueSnapshot(self.name, len(self._pending), len(self._running), self.concurrency, position, eta)
 
@@ -101,8 +181,8 @@ class QueueManager:
     async def stop(self) -> None:
         await asyncio.gather(self.image.stop(), self.video.stop())
 
-    async def enqueue(self, mode: str, job_id: str) -> None:
-        await self.for_mode(mode).enqueue(job_id)
+    async def enqueue(self, mode: str, job_id: str, *, tenant_id: str = "default") -> None:
+        await self.for_mode(mode).enqueue(job_id, tenant_id=tenant_id)
 
     def for_mode(self, mode: str) -> GenerationQueue:
         if mode == "image":
@@ -118,5 +198,6 @@ class QueueManager:
         for job in jobs:
             mode = job["mode"] if isinstance(job, dict) else job.mode
             job_id = job["id"] if isinstance(job, dict) else job.id
-            await self.enqueue(mode, job_id)
+            tenant_id = job.get("client_id", "default") if isinstance(job, dict) else getattr(job, "client_id", "default")
+            await self.enqueue(mode, job_id, tenant_id=tenant_id)
         return len(jobs)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import zipfile
 from datetime import datetime, timezone
 from dataclasses import asdict
 from pathlib import Path
@@ -17,6 +18,16 @@ from app.models import Role
 from app.quota import china_day, next_reset_at
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+DATA_EXPORT_TABLES = (
+    "jobs", "events", "daily_usage", "settings", "conversations", "messages",
+    "assets", "message_assets", "asset_extractions", "asset_segments", "task_runs",
+    "task_jobs", "storyboards", "storyboard_shots", "storyboard_panels",
+    "approval_decisions", "skill_runs", "workflow_events", "activity_events",
+    "training_examples", "quota_ledger", "legacy_storyboard_migrations",
+    "image_edit_contracts", "asset_versions", "schema_migrations",
+)
 
 
 def _admin(request: Request) -> Any:
@@ -79,6 +90,7 @@ async def dashboard(request: Request) -> dict[str, Any]:
                 "conversations", "messages", "assets", "task_runs", "storyboards",
                 "storyboard_shots", "storyboard_panels", "approval_decisions",
                 "skill_runs", "workflow_events", "training_examples",
+                "image_edit_contracts", "asset_versions",
             )
         }
     ledger_by_client = {(row["client_id"], row["resource"]): int(row["units"] or 0) for row in ledger}
@@ -120,6 +132,9 @@ async def patch_access_code(code_id: str, patch: CodePatch, request: Request) ->
             raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "不能停用最后一个管理码"})
     record.update(changes)
     _write_yaml_atomic(path, data)
+    store = getattr(request.app.state, "access_store", None)
+    if store is not None:
+        store.load()
     return {"id": code_id, **changes}
 
 
@@ -197,14 +212,42 @@ async def export_training(request: Request) -> FileResponse:
     return FileResponse(path, media_type="application/x-ndjson", filename="hook-studio-training.jsonl")
 
 
+@router.get("/data/export")
+async def export_all_data(request: Request) -> FileResponse:
+    """Export every database table without access codes or server credentials."""
+    _admin(request)
+    directory = request.app.state.settings.data_dir / "exports"
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = directory / f"hook-studio-data-{stamp}.zip"
+    with request.app.state.db.transaction() as conn, zipfile.ZipFile(
+        path, "w", compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        counts: dict[str, int] = {}
+        for table in DATA_EXPORT_TABLES:
+            rows = conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            counts[table] = len(rows)
+            body = "".join(
+                json.dumps(dict(row), ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
+                for row in rows
+            )
+            archive.writestr(f"tables/{table}.jsonl", body.encode("utf-8"))
+        archive.writestr(
+            "manifest.json",
+            json.dumps({
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "schema_version": request.app.state.db.schema_version(),
+                "tables": counts,
+                "excluded": ["access_codes", "provider_credentials", "session_secrets"],
+            }, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+    return FileResponse(path, media_type="application/zip", filename="hook-studio-data.zip")
+
+
 @router.get("/data/tables")
 async def data_tables(request: Request, table: str = "conversations", limit: int = 200) -> dict[str, Any]:
     _admin(request)
-    allowed = {
-        "conversations", "messages", "assets", "asset_extractions", "task_runs",
-        "storyboards", "storyboard_shots", "storyboard_panels", "approval_decisions",
-        "skill_runs", "workflow_events", "activity_events", "training_examples", "quota_ledger",
-    }
+    allowed = set(DATA_EXPORT_TABLES)
     if table not in allowed:
         raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "不支持的数据表"})
     limit = max(1, min(1000, limit))

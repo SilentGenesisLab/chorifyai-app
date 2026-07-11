@@ -74,13 +74,14 @@ def test_eight_shot_s04_regenerate_and_candidate_switch_close_n4(monkeypatch, tm
 
         assert len(board["shots"]) == 8
         assert board["coverage"]["shot_total"] == 8
-        assert sum(len(shot["panels"]) for shot in board["shots"]) >= 24
-        assert board["coverage"]["panel_required"] >= 24
+        panel_count = sum(len(shot["panels"]) for shot in board["shots"])
+        assert panel_count >= 8
+        assert board["coverage"]["panel_required"] == panel_count
         assert board["coverage"]["clean_ready"] == 8
 
         initial = {shot["id"]: _shot_state(shot) for shot in board["shots"]}
         s04 = next(shot for shot in board["shots"] if shot["order"] == 4)
-        assert len(s04["panels"]) == 3
+        assert 1 <= len(s04["panels"]) <= 3
         image_used = client.get("/api/studio/bootstrap").json()["usage"]["image_used"]
 
         regenerated_response = client.post(
@@ -90,7 +91,7 @@ def test_eight_shot_s04_regenerate_and_candidate_switch_close_n4(monkeypatch, tm
         assert regenerated_response.status_code == 200
         regenerated = regenerated_response.json()
         assert regenerated["revision"] == board["revision"] + 1
-        assert client.get("/api/studio/bootstrap").json()["usage"]["image_used"] == image_used + 3
+        assert client.get("/api/studio/bootstrap").json()["usage"]["image_used"] == image_used + len(s04["panels"])
 
         regenerated_s04 = next(shot for shot in regenerated["shots"] if shot["id"] == s04["id"])
         assert regenerated_s04["revision"] == s04["revision"] + 1

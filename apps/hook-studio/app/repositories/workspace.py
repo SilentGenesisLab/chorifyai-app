@@ -25,8 +25,12 @@ JSON_FIELDS = {
     "evidence_json": "evidence",
     "private_trace_json": "private_trace",
     "envelope_json": "envelope",
+    "must_preserve_json": "must_preserve",
+    "provider_requirements_json": "provider_requirements",
+    "fallback_plan_json": "fallback_plan",
+    "capability_snapshot_json": "capability_snapshot",
+    "qc_json": "qc",
 }
-REQUIRED_PANEL_ROLES = frozenset({"start", "action", "result"})
 
 
 class WorkspaceError(RuntimeError):
@@ -93,14 +97,13 @@ def _snapshot_hash(value: Any) -> str:
 def _required_storyboard_panels(shot: dict[str, Any], index: int) -> list[dict[str, Any]]:
     label = f"storyboard shot {shot.get('ordinal') or index}"
     raw_panels = shot.get("panels")
-    if not isinstance(raw_panels, list) or len(raw_panels) < 3:
-        raise ValueError(f"{label} requires at least three panels")
+    if not isinstance(raw_panels, list) or not raw_panels:
+        raise ValueError(f"{label} requires at least one confirmation panel")
     if not all(isinstance(panel, dict) for panel in raw_panels):
         raise ValueError(f"{label} panels must be objects")
     required = [panel for panel in raw_panels if panel.get("required", True)]
-    roles = {str(panel.get("role") or "") for panel in required}
-    if not REQUIRED_PANEL_ROLES.issubset(roles):
-        raise ValueError(f"{label} requires start, action and result panels")
+    if not required:
+        raise ValueError(f"{label} requires at least one required panel")
     ordinals: set[int] = set()
     logical_keys: set[str] = set()
     for panel_index, panel in enumerate(raw_panels, start=1):
@@ -404,6 +407,109 @@ class WorkspaceRepository:
         with self.db.transaction() as conn:
             row = conn.execute(sql, params).fetchone()
         return _decode(row) if row else None
+
+    def create_image_edit_contract(
+        self, *, client_id: str, conversation_id: str, task_id: str,
+        base_asset_id: str, prompt_user: str, prompt_final: str,
+        router_version: str, domain: str, fidelity_label: str,
+        mask_asset_id: str | None = None, annotation_asset_id: str | None = None,
+        must_preserve: list[str] | None = None,
+        provider_requirements: list[str] | None = None,
+        fallback_plan: list[str] | None = None,
+        capability_snapshot: dict[str, Any] | None = None,
+        contract_id: str | None = None,
+    ) -> dict[str, Any]:
+        contract_id = contract_id or uuid4().hex
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            task = conn.execute(
+                "SELECT client_id,conversation_id FROM task_runs WHERE id=?", (task_id,),
+            ).fetchone()
+            asset_ids = [base_asset_id, mask_asset_id, annotation_asset_id]
+            owned = conn.execute(
+                "SELECT COUNT(*) AS count FROM assets WHERE id IN (?,?,?) AND client_id=? AND deleted_at IS NULL",
+                (*asset_ids, client_id),
+            ).fetchone()["count"]
+            expected_owned = len({item for item in asset_ids if item})
+            if task is None or task["client_id"] != client_id or task["conversation_id"] != conversation_id:
+                raise WorkspaceNotFound("task not found")
+            if int(owned) != expected_owned:
+                raise WorkspaceConflict("image edit assets must belong to the current client")
+            conn.execute(
+                """INSERT INTO image_edit_contracts(
+                id,client_id,conversation_id,task_id,router_version,domain,fidelity_label,
+                base_asset_id,mask_asset_id,annotation_asset_id,prompt_user,prompt_final,
+                must_preserve_json,provider_requirements_json,fallback_plan_json,
+                capability_snapshot_json,status,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    contract_id, client_id, conversation_id, task_id, router_version, domain,
+                    fidelity_label, base_asset_id, mask_asset_id, annotation_asset_id,
+                    prompt_user, prompt_final, json.dumps(must_preserve or [], ensure_ascii=False),
+                    json.dumps(provider_requirements or [], ensure_ascii=False),
+                    json.dumps(fallback_plan or [], ensure_ascii=False),
+                    json.dumps(capability_snapshot or {}, ensure_ascii=False), "queued", timestamp, timestamp,
+                ),
+            )
+            row = conn.execute("SELECT * FROM image_edit_contracts WHERE id=?", (contract_id,)).fetchone()
+        return _decode(row)
+
+    def get_image_edit_contract(self, task_id: str, *, client_id: str | None = None) -> dict[str, Any] | None:
+        sql = "SELECT * FROM image_edit_contracts WHERE task_id=?"
+        params: list[Any] = [task_id]
+        if client_id is not None:
+            sql += " AND client_id=?"
+            params.append(client_id)
+        with self.db.transaction() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return _decode(row) if row else None
+
+    def update_image_edit_contract(self, task_id: str, *, status: str, capability_snapshot: dict[str, Any] | None = None) -> None:
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            if capability_snapshot is None:
+                cursor = conn.execute(
+                    "UPDATE image_edit_contracts SET status=?,updated_at=? WHERE task_id=?",
+                    (status, timestamp, task_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """UPDATE image_edit_contracts SET status=?,capability_snapshot_json=?,updated_at=?
+                    WHERE task_id=?""",
+                    (status, json.dumps(capability_snapshot, ensure_ascii=False), timestamp, task_id),
+                )
+            if cursor.rowcount != 1:
+                raise WorkspaceNotFound("image edit contract not found")
+
+    def record_asset_version(
+        self, *, client_id: str, asset_id: str, parent_asset_id: str | None,
+        edit_contract_id: str | None, relation: str, qc: dict[str, Any] | None = None,
+        selected: bool = False,
+    ) -> dict[str, Any]:
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            asset = conn.execute(
+                "SELECT client_id FROM assets WHERE id=? AND deleted_at IS NULL", (asset_id,),
+            ).fetchone()
+            parent = conn.execute(
+                "SELECT client_id FROM assets WHERE id=? AND deleted_at IS NULL", (parent_asset_id,),
+            ).fetchone() if parent_asset_id else None
+            if asset is None or asset["client_id"] != client_id or (parent and parent["client_id"] != client_id):
+                raise WorkspaceConflict("asset version owners do not match")
+            version = int(conn.execute(
+                "SELECT COALESCE(MAX(version),0)+1 AS version FROM asset_versions WHERE client_id=? AND parent_asset_id IS ?",
+                (client_id, parent_asset_id),
+            ).fetchone()["version"])
+            version_id = uuid4().hex
+            conn.execute(
+                """INSERT INTO asset_versions(
+                id,client_id,asset_id,parent_asset_id,edit_contract_id,version,relation,selected,qc_json,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (version_id, client_id, asset_id, parent_asset_id, edit_contract_id, version,
+                 relation, int(selected), json.dumps(qc or {}, ensure_ascii=False), timestamp),
+            )
+            row = conn.execute("SELECT * FROM asset_versions WHERE id=?", (version_id,)).fetchone()
+        return _decode(row)
 
     def update_task(
         self, task_id: str, values: dict[str, Any], *, client_id: str | None = None,

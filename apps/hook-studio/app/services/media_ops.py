@@ -70,6 +70,32 @@ async def replace_segment_file(source_url: str, replacement_url: str, *, start: 
         return output.read_bytes()
 
 
+async def composite_masked_image_file(source_url: str, edited_url: str, mask_url: str) -> bytes:
+    """Restore source pixels outside a transparent-edit PNG mask."""
+    with tempfile.TemporaryDirectory(prefix="hook-image-edit-") as temp:
+        root = Path(temp)
+        source = root / "source.png"
+        edited = root / "edited.png"
+        mask = root / "mask.png"
+        output = root / "composited.png"
+        await asyncio.gather(
+            download(source_url, source, max_bytes=50 * 1024 * 1024),
+            download(edited_url, edited, max_bytes=50 * 1024 * 1024),
+            download(mask_url, mask, max_bytes=4 * 1024 * 1024),
+        )
+        await run_ffmpeg([
+            "-i", str(source), "-i", str(edited), "-i", str(mask),
+            "-filter_complex",
+            "[1:v][0:v]scale2ref[edit][base];"
+            "[2:v][base]scale2ref[maskraw][base2];"
+            "[maskraw]format=rgba,alphaextract,negate[m];"
+            "[edit]format=rgb24[editrgb];[editrgb][m]alphamerge[cut];"
+            "[base2][cut]overlay=format=rgb,format=rgba[out]",
+            "-map", "[out]", str(output),
+        ])
+        return output.read_bytes()
+
+
 async def render_animatic_frames(frame_urls: list[str], durations: list[float]) -> bytes:
     if not frame_urls or len(frame_urls) != len(durations):
         raise MediaOperationError("动态预演需要每镜一张clean frame和对应时长")

@@ -1,0 +1,7 @@
+{
+  "healthz": 200,
+  "bootstrap_without_code": 401,
+  "client_bootstrap": 200,
+  "client_admin_export": 403,
+  "admin_data_export": 200
+}

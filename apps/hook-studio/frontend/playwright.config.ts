@@ -17,7 +17,10 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
-    launchOptions: { executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' },
+    launchOptions: {
+      executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      args: ['--disable-gpu'],
+    },
   },
   projects: [
     { name: 'desktop-chrome', use: { viewport: { width: 1440, height: 1000 } } },

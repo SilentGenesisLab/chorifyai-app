@@ -18,7 +18,7 @@ class FakeKernelProvider:
     async def upload_blob(self, filename: str, content: bytes, content_type: str, *, stage: str, request_id: str | None = None) -> str:
         return f"https://example.invalid/output/{request_id or uuid4().hex}/{filename}"
 
-    async def generate_image(self, *, prompt: str, reference_urls: list[str], request_id: str, metadata: dict[str, Any] | None = None) -> ProviderResult:
+    async def generate_image(self, *, prompt: str, reference_urls: list[str], request_id: str, metadata: dict[str, Any] | None = None, aspect_ratio: str = "9:16") -> ProviderResult:
         return ProviderResult(
             "success",
             "https://placehold.co/720x1280/png?text=Hook+Studio",
@@ -32,6 +32,12 @@ class FakeKernelProvider:
             "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
             f"fake-video-{request_id}",
             trace={"provider": "fake", "attempts": 1, "generation_mode": generation_mode},
+        )
+
+    async def edit_image(self, *, prompt: str, image_url: str, request_id: str, mask_url: str | None = None, annotation_url: str | None = None, composite_outside_mask: bool = True, feather_px: int = 2, metadata: dict[str, Any] | None = None) -> ProviderResult:
+        return ProviderResult(
+            "success", "http://127.0.0.1:8011/demo-assets/creative-workstation.jpg", f"fake-edit-{request_id}",
+            trace={"provider": "fake", "attempts": 1, "route": "direct_edit", "mask_applied": bool(mask_url), "composite_applied": bool(mask_url and composite_outside_mask)},
         )
 
     async def poll_video(self, submit_id: str, *, request_id: str, external_ref: str = "hook-studio") -> ProviderResult:

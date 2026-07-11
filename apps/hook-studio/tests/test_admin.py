@@ -1,3 +1,6 @@
+import io
+import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,7 +43,7 @@ def test_admin_storyboard_runtime_tables_are_exportable(tmp_path: Path):
     app = FastAPI()
     app.include_router(router)
     app.state.db = db
-    app.state.settings = SimpleNamespace(access_codes_file=tmp_path / "codes.yaml")
+    app.state.settings = SimpleNamespace(access_codes_file=tmp_path / "codes.yaml", data_dir=tmp_path)
     (tmp_path / "codes.yaml").write_text("codes: []\n", encoding="utf-8")
 
     @app.middleware("http")
@@ -49,7 +52,22 @@ def test_admin_storyboard_runtime_tables_are_exportable(tmp_path: Path):
         return await call_next(request)
 
     client = TestClient(app)
-    for table in ("storyboard_panels", "approval_decisions", "skill_runs", "workflow_events"):
+    for table in (
+        "storyboard_panels", "approval_decisions", "skill_runs", "workflow_events",
+        "image_edit_contracts", "asset_versions", "message_assets", "asset_segments",
+    ):
         response = client.get("/api/admin/data/tables", params={"table": table})
         assert response.status_code == 200
         assert response.json()["table"] == table
+
+    exported = client.get("/api/admin/data/export")
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        names = set(archive.namelist())
+        assert "manifest.json" in names
+        assert "tables/messages.jsonl" in names
+        assert "tables/image_edit_contracts.jsonl" in names
+        assert "tables/asset_versions.jsonl" in names
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["schema_version"] == 6
+        assert "access_codes" in manifest["excluded"]

@@ -185,6 +185,7 @@ export const api = {
   admin: () => request<{ clients: ClientUsage[]; usage: Usage; health: string; backup: string; tables: Record<string, number> }>('/admin/dashboard'),
   trainingExportUrl: () => `${API_BASE}/admin/training/export`,
   eventsExportUrl: () => `${API_BASE}/admin/events/export`,
+  dataExportUrl: () => `${API_BASE}/admin/data/export`,
   updateClient: (id: string, patch: { enabled?: boolean; video_limit?: number; image_limit?: number }) => request<ClientUsage>(`/admin/access-codes/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: patch.enabled, daily_video_limit: patch.video_limit, daily_image_limit: patch.image_limit }) }),
   updateGlobalLimit: (globalVideoDailyLimit: number) => request<Usage>('/admin/settings', { method: 'PATCH', body: JSON.stringify({ global_video_daily_limit: globalVideoDailyLimit }) }),
 }

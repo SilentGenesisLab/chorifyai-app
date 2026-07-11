@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import time
 
 import yaml
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.providers.kernel import ProviderResult
 
 
 def _configure(monkeypatch, tmp_path):
@@ -71,10 +73,130 @@ def test_multiconversation_image_and_training_capture(monkeypatch, tmp_path):
         messages = client.get(f"/api/studio/conversations/{conversation['id']}/messages").json()["items"]
         assert messages[-1]["kind"] == "media"
         assert messages[-1]["assets"][0]["type"] == "image"
+        assert messages[-1]["assets"][0]["role"] == "final"
         usage = client.get("/api/studio/bootstrap").json()["usage"]
         assert usage["image_used"] == 1
         with app.state.db.transaction() as conn:
             assert conn.execute("SELECT COUNT(*) n FROM training_examples").fetchone()["n"] == 1
+
+
+def test_image_edit_keeps_contract_versions_and_training_trace(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Z9er2QAAAABJRU5ErkJggg=="
+    )
+    with TestClient(app) as client:
+        client.post("/api/auth/login", json={"access_code": "client-code"})
+        conversation = client.post("/api/studio/conversations", json={"title": "局部修图"}).json()
+        submitted = client.post(
+            f"/api/studio/conversations/{conversation['id']}/messages",
+            data={"text": "只把选区内的卡片改成绿色，其他像素保持不变", "tool": "edit_image", "links": "[]"},
+            files=[
+                ("attachments", ("source-face-mask-product.png", png, "image/png")),
+                ("attachments", ("mask-selection.png", png, "image/png")),
+            ],
+        )
+        assert submitted.status_code == 202
+        task = _wait_task(client, submitted.json()["task"]["id"], {"succeeded", "failed"})
+        assert task["status"] == "succeeded"
+        assert task["result"]["route"] == "direct_edit"
+
+        messages = client.get(f"/api/studio/conversations/{conversation['id']}/messages").json()["items"]
+        assert messages[-1]["kind"] == "media"
+        assert messages[-1]["assets"][0]["type"] == "image"
+        with app.state.db.transaction() as conn:
+            contract = conn.execute(
+                "SELECT * FROM image_edit_contracts WHERE task_id=?", (task["id"],),
+            ).fetchone()
+            versions = conn.execute(
+                "SELECT relation,selected FROM asset_versions WHERE edit_contract_id=?", (contract["id"],),
+            ).fetchall()
+            skill = conn.execute(
+                "SELECT skill_id,status FROM skill_runs WHERE task_id=?", (task["id"],),
+            ).fetchone()
+            training = conn.execute(
+                "SELECT COUNT(*) n FROM training_examples WHERE task_id=?", (task["id"],),
+            ).fetchone()["n"]
+        assert contract["status"] == "completed"
+        assert [(row["relation"], row["selected"]) for row in versions] == [("selected", 1)]
+        assert skill["skill_id"] == "hook-studio-image-router"
+        assert skill["status"] == "passed"
+        assert training == 1
+
+
+def test_image_edit_enforces_mask_composite_when_kernel_does_not(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Z9er2QAAAABJRU5ErkJggg=="
+    )
+    composite_calls = []
+
+    async def edit_without_composite(self, **kwargs):
+        return ProviderResult(
+            "success", "https://placehold.co/720x1280/png?text=Raw", "raw-edit",
+            trace={"provider": "fake", "composite_applied": False},
+        )
+
+    async def fake_composite(source_url, edited_url, mask_url):
+        composite_calls.append((source_url, edited_url, mask_url))
+        return png
+
+    monkeypatch.setattr("app.providers.fake.FakeKernelProvider.edit_image", edit_without_composite)
+    monkeypatch.setattr("app.services.production.composite_masked_image_file", fake_composite)
+    with TestClient(app) as client:
+        client.post("/api/auth/login", json={"access_code": "client-code"})
+        conversation = client.post("/api/studio/conversations", json={"title": "强制合成"}).json()
+        submitted = client.post(
+            f"/api/studio/conversations/{conversation['id']}/messages",
+            data={"text": "只修改蒙版内颜色", "tool": "edit_image", "links": "[]"},
+            files=[
+                ("attachments", ("source-face-mask-product.png", png, "image/png")),
+                ("attachments", ("mask-selection.png", png, "image/png")),
+            ],
+        ).json()
+        task = _wait_task(client, submitted["task"]["id"], {"succeeded", "failed"})
+        assert task["status"] == "succeeded"
+        assert task["result"]["route"] == "direct_edit+mask_pixel_composite"
+        assert len(composite_calls) == 1
+        with app.state.db.transaction() as conn:
+            version = conn.execute(
+                "SELECT qc_json FROM asset_versions WHERE selected=1",
+            ).fetchone()
+        assert '"outside_mask_preserved": true' in version["qc_json"].lower()
+
+
+def test_image_edit_falls_back_to_reference_repaint(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Z9er2QAAAABJRU5ErkJggg=="
+    )
+
+    async def rejected_edit(self, **kwargs):
+        raise RuntimeError("edit endpoint unavailable")
+
+    async def fake_composite(source_url, edited_url, mask_url):
+        return png
+
+    monkeypatch.setattr("app.providers.fake.FakeKernelProvider.edit_image", rejected_edit)
+    monkeypatch.setattr("app.services.production.composite_masked_image_file", fake_composite)
+    with TestClient(app) as client:
+        client.post("/api/auth/login", json={"access_code": "client-code"})
+        conversation = client.post("/api/studio/conversations", json={"title": "降级链"}).json()
+        submitted = client.post(
+            f"/api/studio/conversations/{conversation['id']}/messages",
+            data={"text": "只修改选区颜色", "tool": "edit_image", "links": "[]"},
+            files=[
+                ("attachments", ("source-product.png", png, "image/png")),
+                ("attachments", ("mask-selection.png", png, "image/png")),
+                ("attachments", ("annotation-location.png", png, "image/png")),
+            ],
+        ).json()
+        task = _wait_task(client, submitted["task"]["id"], {"succeeded", "failed"})
+        assert task["status"] == "succeeded"
+        assert task["result"]["route"] == "reference_repaint+mask_pixel_composite"
+        contract = app.state.workspace.get_task(task["id"])["params"]["image_contract"]
+        assert "图2只作为annotation" in contract["prompt_final"]
+        assert "图3" not in contract["prompt_final"]
 
 
 def test_long_video_storyboard_confirmation_flow(monkeypatch, tmp_path):

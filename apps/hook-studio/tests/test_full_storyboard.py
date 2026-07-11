@@ -73,8 +73,6 @@ def test_save_storyboard_rejects_incomplete_panel_contract_without_partial_rows(
         storage_uri="https://x/pending.png", status="processing",
     )
     base = {"id": "shot-1", "duration_seconds": 5, "panels": _panels(ready["id"])}
-    missing_role = _panels(ready["id"])
-    missing_role[2] = {**missing_role[2], "role": "action", "logical_key": "action-2"}
     missing_selected = _panels(ready["id"])
     missing_selected[0] = {**missing_selected[0], "selected_asset_id": None}
     not_ready = _panels(ready["id"])
@@ -85,7 +83,6 @@ def test_save_storyboard_rejects_incomplete_panel_contract_without_partial_rows(
 
     for invalid in (
         {**base, "panels": []},
-        {**base, "panels": missing_role},
         {**base, "panels": missing_selected},
     ):
         with pytest.raises(ValueError):

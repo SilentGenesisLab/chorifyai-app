@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "transport": "url",
+  "bytes": 783459,
+  "latency_ms": 164128,
+  "usage": {
+    "total_tokens": 6365,
+    "input_tokens": 115,
+    "output_tokens": 6250,
+    "input_tokens_details": {}
+  },
+  "top_fields": [
+    "created",
+    "usage"
+  ],
+  "item_fields": []
+}
