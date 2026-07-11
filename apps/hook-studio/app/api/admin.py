@@ -75,7 +75,11 @@ async def dashboard(request: Request) -> dict[str, Any]:
         ).fetchall()]
         table_counts = {
             name: conn.execute(f"SELECT COUNT(*) n FROM {name}").fetchone()["n"]
-            for name in ("conversations", "messages", "assets", "task_runs", "storyboards", "training_examples")
+            for name in (
+                "conversations", "messages", "assets", "task_runs", "storyboards",
+                "storyboard_shots", "storyboard_panels", "approval_decisions",
+                "skill_runs", "workflow_events", "training_examples",
+            )
         }
     ledger_by_client = {(row["client_id"], row["resource"]): int(row["units"] or 0) for row in ledger}
     clients = []
@@ -196,7 +200,11 @@ async def export_training(request: Request) -> FileResponse:
 @router.get("/data/tables")
 async def data_tables(request: Request, table: str = "conversations", limit: int = 200) -> dict[str, Any]:
     _admin(request)
-    allowed = {"conversations", "messages", "assets", "asset_extractions", "task_runs", "storyboards", "storyboard_shots", "activity_events", "training_examples", "quota_ledger"}
+    allowed = {
+        "conversations", "messages", "assets", "asset_extractions", "task_runs",
+        "storyboards", "storyboard_shots", "storyboard_panels", "approval_decisions",
+        "skill_runs", "workflow_events", "activity_events", "training_examples", "quota_ledger",
+    }
     if table not in allowed:
         raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "不支持的数据表"})
     limit = max(1, min(1000, limit))
