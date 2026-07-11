@@ -79,7 +79,10 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
         conn.execute(
             """INSERT INTO storyboard_shots(id,storyboard_id,ordinal,title,description,duration_seconds,
             image_asset_id,status,payload_json) VALUES('s1','b1',1,'旧镜头','旧描述',5,'old-image','draft',?)""",
-            (json.dumps({"visual": "只保留过旧画面字段"}, ensure_ascii=False),),
+            (json.dumps({
+                "visual": ["错误类型"], "story_function": {"bad": True},
+                "stable_truth": "product", "may_vary": {"bad": True}, "shot_size": "   ",
+            }, ensure_ascii=False),),
         )
         conn.execute(
             """INSERT INTO storyboard_shots(id,storyboard_id,ordinal,title,description,duration_seconds,
@@ -123,8 +126,9 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
             "composition", "action_start", "action_trigger", "action_result", "camera_move", "sound",
             "transition", "first_failure_cue",
         ):
-            assert payload[field]
-        assert payload["stable_truth"] and payload["may_vary"]
+            assert isinstance(payload[field], str) and payload[field].strip()
+        assert all(isinstance(item, str) and item.strip() for item in payload["stable_truth"])
+        assert all(isinstance(item, str) and item.strip() for item in payload["may_vary"])
         assert payload["reference_manifest"] == []
     valid_clean = assets[next(panel["selected_asset_id"] for panel in panels if panel["shot_id"] == "s1")]
     missing_clean = assets[next(panel["selected_asset_id"] for panel in panels if panel["shot_id"] == "s2")]

@@ -54,7 +54,7 @@ test('公网管理后台显示账号额度、全镜头运行表和训练数据�
   await expect(page.getByRole('heading', { name: '账号与额度' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '训练数据资产' })).toBeVisible()
   await expect(page.getByText('分镜画格')).toBeVisible()
-  await expect(page.getByText('审批', { exact: true })).toBeVisible()
+  await expect(page.locator('.data-counts span', { hasText: /^审批/ })).toBeVisible()
   await expect(page.getByText('能力运行')).toBeVisible()
   await expect(page.getByRole('link', { name: '导出训练 JSONL' })).toBeVisible()
   await expect(page.getByRole('link', { name: '导出事件 JSONL' })).toBeVisible()

@@ -415,7 +415,14 @@ class Database:
                 "first_failure_cue": "产品外观、动作终点或空间方向异常即回炉",
             }
             for key, value in defaults.items():
-                if not payload.get(key):
+                current = payload.get(key)
+                if isinstance(value, list):
+                    valid = isinstance(current, list) and bool(current) and all(
+                        isinstance(item, str) and item.strip() for item in current
+                    )
+                else:
+                    valid = isinstance(current, str) and bool(current.strip())
+                if not valid:
                     payload[key] = value
             payload["reference_manifest"] = []
             payload["legacy_migration"] = {"version": 4, "source": "v2_storyboard_shot"}
