@@ -5,9 +5,9 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
-from urllib.parse import urlsplit
 
 from app.storyboard_runtime import PanelContract, ShotContract
+from app.url_policy import is_sendable_media_url
 
 
 SKILL_PACK_VERSION = "full-storyboard-v1.0.0"
@@ -156,7 +156,7 @@ class ShotGateValidator:
                         reasons.append(f"{label}选择的不是clean frame")
                     elif asset.get("status") != "ready":
                         reasons.append(f"{label}的clean frame状态不可用")
-                    elif not _is_sendable_url(asset.get("storage_uri")):
+                    elif not is_sendable_media_url(asset.get("storage_uri")):
                         reasons.append(f"{label}的clean frame缺少可读取URI")
             if not shot.get("approved"):
                 reasons.append(f"{label}尚未逐镜批准")
@@ -199,7 +199,7 @@ class ShotGateValidator:
             else:
                 seen_slots.add((kind, slot))
             url = item.get("url")
-            if not _is_sendable_url(url):
+            if not is_sendable_media_url(url):
                 reasons.append(f"{prefix}URL不可用")
             role = item.get("role")
             if not isinstance(role, str) or not role.strip():
@@ -210,7 +210,7 @@ class ShotGateValidator:
                     isinstance(entry, str) and entry.strip() for entry in value
                 ):
                     reasons.append(f"{prefix}{field}必须是字符串数组")
-            if resolve_reference is not None and isinstance(kind, str) and _is_sendable_url(url):
+            if resolve_reference is not None and isinstance(kind, str) and is_sendable_media_url(url):
                 asset = resolve_reference(kind, str(url))
                 if asset is None:
                     reasons.append(f"{prefix}URL不属于当前客户")
@@ -265,16 +265,3 @@ def _count(value: Any) -> int:
     if isinstance(value, (list, tuple, set, dict)):
         return len(value)
     return 1
-
-
-def _is_sendable_url(value: Any) -> bool:
-    if not isinstance(value, str) or not value.strip() or len(value) > 4096:
-        return False
-    parsed = urlsplit(value.strip())
-    return bool(
-        parsed.scheme in {"http", "https"}
-        and parsed.hostname
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
-    )

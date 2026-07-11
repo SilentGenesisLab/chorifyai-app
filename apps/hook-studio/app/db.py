@@ -7,7 +7,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
-from urllib.parse import urlsplit
+
+from app.url_policy import is_sendable_media_url
 
 
 SCHEMA = """
@@ -374,13 +375,6 @@ class Database:
         return hashlib.sha256(f"{namespace}:{value}".encode("utf-8")).hexdigest()[:32]
 
     @staticmethod
-    def _is_sendable_url(value: object) -> bool:
-        if not isinstance(value, str) or not value.strip():
-            return False
-        parsed = urlsplit(value.strip())
-        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-    @staticmethod
     def _legacy_description(description: object, title: object, fallback: str) -> str:
         for value in (description, title):
             if isinstance(value, str) and value.strip():
@@ -461,7 +455,7 @@ class Database:
                 and row["source_client_id"] == row["client_id"]
                 and row["source_media_type"] == "image"
                 and row["source_status"] == "ready"
-                and cls._is_sendable_url(row["source_storage_uri"])
+                and is_sendable_media_url(row["source_storage_uri"])
                 and row["source_deleted_at"] is None
             )
             migration_status = "backfilled" if valid_source else "quarantined"
@@ -558,7 +552,7 @@ class Database:
                 and row["asset_source_type"] == "storyboard_clean"
                 and row["asset_media_type"] == "image"
                 and row["asset_status"] == "ready"
-                and cls._is_sendable_url(row["asset_storage_uri"])
+                and is_sendable_media_url(row["asset_storage_uri"])
                 and row["asset_deleted_at"] is None
             )
             if not usable:
