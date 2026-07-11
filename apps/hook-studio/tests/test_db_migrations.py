@@ -39,8 +39,8 @@ def test_v1_database_migrates_additively_and_idempotently(tmp_path):
         "quota_ledger", "storyboard_panels", "skill_runs", "workflow_events",
         "approval_decisions", "legacy_storyboard_migrations",
     }.issubset(tables)
-    assert versions == [1, 2, 3, 4]
-    assert db.schema_version() == user_version == 4
+    assert versions == [1, 2, 3, 4, 5]
+    assert db.schema_version() == user_version == 5
     assert job["prompt_user"] == "旧提示"
     assert foreign_key_errors == []
 
@@ -113,7 +113,7 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert versions == [1, 2, 3, 4]
+    assert versions == [1, 2, 3, 4, 5]
     assert len(panels) == 6
     for shot in shots:
         shot_panels = [panel for panel in panels if panel["shot_id"] == shot["id"]]
@@ -136,6 +136,7 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
     assert missing_clean["status"] == "missing" and missing_clean["storage_uri"] is None
     assert audit["s1"]["status"] == "backfilled"
     assert audit["s2"]["status"] == "quarantined"
+    assert all(row["contract_version"] == 5 and row["normalized_at"] for row in audit.values())
     assert board["status"] == "legacy_incomplete"
     assert integrity == "ok"
     assert foreign_key_errors == []

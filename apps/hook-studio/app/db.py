@@ -358,6 +358,12 @@ CREATE INDEX IF NOT EXISTS idx_legacy_storyboard_migrations_board
 """
 
 
+SCHEMA_V5 = """
+ALTER TABLE legacy_storyboard_migrations ADD COLUMN contract_version INTEGER NOT NULL DEFAULT 4;
+ALTER TABLE legacy_storyboard_migrations ADD COLUMN normalized_at TEXT;
+"""
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -365,6 +371,43 @@ class Database:
     @staticmethod
     def _legacy_id(namespace: str, value: str) -> str:
         return hashlib.sha256(f"{namespace}:{value}".encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _normalize_legacy_payload(payload: object, description: str, *, version: int) -> dict[str, object]:
+        if not isinstance(payload, dict):
+            payload = {}
+        normalized = dict(payload)
+        defaults: dict[str, object] = {
+            "story_function": "历史镜头复核",
+            "visual": description,
+            "shot_size": "中景",
+            "camera_angle": "平视",
+            "camera_height": "胸口高度",
+            "lens_feel": "自然透视",
+            "composition": "主体位于9:16画面中心，前中后景关系清楚",
+            "action_start": "动作开始前，主体与产品位置清楚",
+            "action_trigger": "主体开始执行镜头动作",
+            "action_result": "动作完成且结果清楚可见",
+            "camera_move": "固定机位或缓慢推进，保持主体连续",
+            "sound": "保留现场环境声与动作音",
+            "transition": "按动作结果切入下一镜",
+            "stable_truth": ["产品外观", "主体身份", "空间方向"],
+            "may_vary": ["自然微表情", "轻微环境变化"],
+            "first_failure_cue": "产品外观、动作终点或空间方向异常即回炉",
+        }
+        for key, value in defaults.items():
+            current = normalized.get(key)
+            if isinstance(value, list):
+                valid = isinstance(current, list) and bool(current) and all(
+                    isinstance(item, str) and item.strip() for item in current
+                )
+            else:
+                valid = isinstance(current, str) and bool(current.strip())
+            if not valid:
+                normalized[key] = value
+        normalized["reference_manifest"] = []
+        normalized["legacy_migration"] = {"version": version, "source": "v2_storyboard_shot"}
+        return normalized
 
     @classmethod
     def _migrate_legacy_storyboards_v4(cls, conn: sqlite3.Connection, timestamp: str) -> None:
@@ -394,38 +437,7 @@ class Database:
                 payload = json.loads(row["payload_json"] or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):
                 payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
-            defaults = {
-                "story_function": "历史镜头复核",
-                "visual": description,
-                "shot_size": "中景",
-                "camera_angle": "平视",
-                "camera_height": "胸口高度",
-                "lens_feel": "自然透视",
-                "composition": "主体位于9:16画面中心，前中后景关系清楚",
-                "action_start": "动作开始前，主体与产品位置清楚",
-                "action_trigger": "主体开始执行镜头动作",
-                "action_result": "动作完成且结果清楚可见",
-                "camera_move": "固定机位或缓慢推进，保持主体连续",
-                "sound": "保留现场环境声与动作音",
-                "transition": "按动作结果切入下一镜",
-                "stable_truth": ["产品外观", "主体身份", "空间方向"],
-                "may_vary": ["自然微表情", "轻微环境变化"],
-                "first_failure_cue": "产品外观、动作终点或空间方向异常即回炉",
-            }
-            for key, value in defaults.items():
-                current = payload.get(key)
-                if isinstance(value, list):
-                    valid = isinstance(current, list) and bool(current) and all(
-                        isinstance(item, str) and item.strip() for item in current
-                    )
-                else:
-                    valid = isinstance(current, str) and bool(current.strip())
-                if not valid:
-                    payload[key] = value
-            payload["reference_manifest"] = []
-            payload["legacy_migration"] = {"version": 4, "source": "v2_storyboard_shot"}
+            payload = cls._normalize_legacy_payload(payload, description, version=4)
 
             valid_source = bool(
                 row["image_asset_id"]
@@ -498,6 +510,31 @@ class Database:
                 ),
             )
 
+    @classmethod
+    def _normalize_legacy_storyboards_v5(cls, conn: sqlite3.Connection, timestamp: str) -> None:
+        rows = conn.execute(
+            """SELECT sh.id,sh.title,sh.description,sh.payload_json
+            FROM storyboard_shots sh
+            JOIN legacy_storyboard_migrations migration ON migration.shot_id=sh.id
+            ORDER BY sh.id"""
+        ).fetchall()
+        for row in rows:
+            description = str(row["description"] or row["title"] or "历史镜头")
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            normalized = cls._normalize_legacy_payload(payload, description, version=5)
+            conn.execute(
+                "UPDATE storyboard_shots SET description=?,payload_json=? WHERE id=?",
+                (description, json.dumps(normalized, ensure_ascii=False), row["id"]),
+            )
+            conn.execute(
+                """UPDATE legacy_storyboard_migrations
+                SET contract_version=5,normalized_at=? WHERE shot_id=?""",
+                (timestamp, row["id"]),
+            )
+
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
@@ -550,6 +587,19 @@ class Database:
                         "INSERT INTO schema_migrations(version, applied_at) VALUES(4, ?)", (now,),
                     )
                     conn.execute("PRAGMA user_version=4")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                applied.add(4)
+            if 5 not in applied:
+                try:
+                    conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA_V5)
+                    self._normalize_legacy_storyboards_v5(conn, now)
+                    conn.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES(5, ?)", (now,),
+                    )
+                    conn.execute("PRAGMA user_version=5")
                     conn.commit()
                 except Exception:
                     conn.rollback()
