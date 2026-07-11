@@ -30,6 +30,32 @@ def _wait_task(client: TestClient, task_id: str, expected: set[str]) -> dict:
     raise AssertionError(f"task {task_id} did not reach {expected}")
 
 
+def _approve_full_storyboard(client: TestClient, board_id: str) -> dict:
+    board = client.get(f"/api/studio/storyboards/{board_id}").json()
+    for shot in board["shots"]:
+        for panel in shot["panels"]:
+            response = client.post(f"/api/studio/storyboards/{board_id}/decisions", json={
+                "expected_version": board["revision"], "scope": "panel", "scope_id": panel["id"],
+                "decision": "approved",
+            })
+            assert response.status_code == 200
+        response = client.post(f"/api/studio/storyboards/{board_id}/decisions", json={
+            "expected_version": board["revision"], "scope": "shot", "scope_id": shot["id"],
+            "decision": "approved",
+        })
+        assert response.status_code == 200
+    response = client.post(f"/api/studio/storyboards/{board_id}/decisions", json={
+        "expected_version": board["revision"], "scope": "storyboard", "scope_id": board_id,
+        "decision": "approved",
+    })
+    assert response.status_code == 200
+    response = client.post(f"/api/studio/storyboards/{board_id}/animatic", json={
+        "expected_version": board["revision"], "confirm": True,
+    })
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_multiconversation_image_and_training_capture(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     with TestClient(app) as client:
@@ -66,6 +92,7 @@ def test_long_video_storyboard_confirmation_flow(monkeypatch, tmp_path):
         board = next(item["storyboard"] for item in messages if item["kind"] == "storyboard")
         assert board["total_duration_seconds"] == 60
         assert len(board["shots"]) >= 4
+        _approve_full_storyboard(client, board["id"])
         approved = client.post(f"/api/studio/storyboards/{board['id']}/confirm", json={"approved": True, "feedback": ""})
         assert approved.status_code == 200
         done = _wait_task(client, submitted["task"]["id"], {"succeeded", "failed"})
@@ -91,6 +118,7 @@ def test_batch_variants_complete_as_one_task(monkeypatch, tmp_path):
                 f"/api/studio/conversations/{conversation['id']}/messages"
             ).json()["items"] if item["kind"] == "storyboard"
         )
+        _approve_full_storyboard(client, board["id"])
         client.post(f"/api/studio/storyboards/{board['id']}/confirm", json={"approved": True, "feedback": ""})
         done = _wait_task(client, submitted["task"]["id"], {"succeeded", "failed"})
         assert done["status"] == "succeeded"

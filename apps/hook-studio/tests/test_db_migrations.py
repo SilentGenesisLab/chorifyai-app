@@ -36,9 +36,10 @@ def test_v1_database_migrates_additively_and_idempotently(tmp_path):
     assert {
         "conversations", "messages", "assets", "message_assets", "task_runs",
         "storyboards", "storyboard_shots", "activity_events", "training_examples",
-        "quota_ledger",
+        "quota_ledger", "storyboard_panels", "skill_runs", "workflow_events",
+        "approval_decisions",
     }.issubset(tables)
-    assert versions == [1, 2]
-    assert db.schema_version() == user_version == 2
+    assert versions == [1, 2, 3]
+    assert db.schema_version() == user_version == 3
     assert job["prompt_user"] == "旧提示"
     assert foreign_key_errors == []

@@ -27,6 +27,7 @@ from app.services.audio import AudioReplacementService
 from app.services.generation import GenerationService, SQLiteJobRepository
 from app.services.ingestion import AttachmentIngestionService
 from app.services.production import ProductionManager
+from app.services.workflow_events import WorkflowEventStream
 from app.settings import Settings
 from app.skill_policy import VideoSkillPolicy
 
@@ -112,6 +113,7 @@ async def lifespan(app: FastAPI):
     app.state.workspace = workspace_repository
     app.state.ingestion = AttachmentIngestionService(max_bytes=512 * 1024 * 1024)
     app.state.production = production
+    app.state.workflow_events = WorkflowEventStream(workspace_repository)
     app.state.events = events
     app.state.presets = _load_presets()
     app.state.backup = BackupManager(

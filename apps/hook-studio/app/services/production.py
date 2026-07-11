@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -10,8 +11,12 @@ from app.repositories.workspace import WorkspaceConflict, WorkspaceRepository
 from app.models import EventAction, EventRecord, Mode
 from app.services.analysis import ReferenceAnalysisService
 from app.services.audio import AudioReplacementService
-from app.services.media_ops import replace_segment_file
+from app.services.media_ops import render_animatic_frames, replace_segment_file
 from app.services.planning import normalize_plan, planning_prompt, split_duration
+from app.skill_runtime import (
+    ApprovalPolicy, BriefCompiler, PanelPlanner, PromptCompiler, ReferenceManifestCompiler, ShotGateValidator,
+    SkillRuntime, StoryboardCompiler,
+)
 
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -39,12 +44,21 @@ class ProductionManager:
         self.concurrency = {"image": image_concurrency, "video": video_concurrency}
         self.poll_interval = poll_interval; self.poll_timeout = poll_timeout
         self.audio = audio; self.analysis = ReferenceAnalysisService(provider); self.events = events
+        self.skill_runtime = SkillRuntime(repository)
+        self.brief_compiler = BriefCompiler()
+        self.storyboard_compiler = StoryboardCompiler()
+        self.panel_planner = PanelPlanner()
+        self.prompt_compiler = PromptCompiler()
+        self.reference_compiler = ReferenceManifestCompiler()
+        self.shot_gate = ShotGateValidator()
+        self.approval_policy = ApprovalPolicy()
         self._queues = {"image": asyncio.Queue(), "video": asyncio.Queue()}
         self._workers: list[asyncio.Task[None]] = []
         self._pending = {"image": set(), "video": set()}
         self._running = {"image": set(), "video": set()}
         self._lock = asyncio.Lock()
         self._planning_lock = asyncio.Semaphore(1)
+        self._image_slots = asyncio.Semaphore(image_concurrency)
         self._generation_slots = asyncio.Semaphore(video_concurrency)
 
     async def start(self) -> None:
@@ -77,6 +91,11 @@ class ProductionManager:
             if task_id in self._pending[queue_name] or task_id in self._running[queue_name]: return
             self._pending[queue_name].add(task_id)
         await self._queues[queue_name].put(task_id)
+        snapshot = await self.snapshot()
+        self.repository.append_workflow_event(
+            task_id, client_id=task["client_id"], event_type="queue.snapshot",
+            payload={"queue": queue_name, "counts": snapshot},
+        )
 
     async def snapshot(self) -> dict[str, int]:
         async with self._lock:
@@ -100,10 +119,22 @@ class ProductionManager:
             if task_id is None: queue.task_done(); return
             async with self._lock:
                 self._pending[queue_name].discard(task_id); self._running[queue_name].add(task_id)
+            task = self.repository.get_task(task_id)
+            if task:
+                self.repository.append_workflow_event(
+                    task_id, client_id=task["client_id"], event_type="queue.started",
+                    payload={"queue": queue_name, "counts": await self.snapshot()},
+                )
             try: await self.process(task_id)
             except Exception as exc: await self._fail(task_id, exc)
             finally:
                 async with self._lock: self._running[queue_name].discard(task_id)
+                task = self.repository.get_task(task_id)
+                if task:
+                    self.repository.append_workflow_event(
+                        task_id, client_id=task["client_id"], event_type="queue.settled",
+                        payload={"queue": queue_name, "counts": await self.snapshot()},
+                    )
                 queue.task_done()
 
     async def process(self, task_id: str) -> None:
@@ -123,6 +154,13 @@ class ProductionManager:
             rows = conn.execute("SELECT text_content,structured_json FROM asset_extractions WHERE asset_id IN (" + ",".join("?" for _ in ids) + ") ORDER BY created_at", ids).fetchall()
         return "\n".join(str(row["text_content"] or row["structured_json"] or "") for row in rows)[:12000]
 
+    @staticmethod
+    def _panel_references(base_urls: list[str], previous_clean_url: str | None) -> list[str]:
+        references = list(base_urls[:8])
+        if previous_clean_url and previous_clean_url not in references:
+            references.append(previous_clean_url)
+        return references[:9]
+
     async def _plan(self, task: dict[str, Any]) -> None:
         params = task.get("params", {}); kind = task["kind"]; assets = self._task_assets(task)
         self.repository.update_task(task["id"], {"status": "planning", "stage": "analyzing", "progress": 0.08})
@@ -133,10 +171,11 @@ class ProductionManager:
                 client_limit=int(params.get("client_image_limit") or 1000), global_limit=self.global_image_limit,
             )
             try:
-                generated = await self.provider.generate_image(
-                    prompt=f"{params.get('prompt') or '根据参考素材生成商业图片'}。9:16竖屏，真实商业摄影，无字幕无水印。",
-                    reference_urls=reference_urls[:9], request_id=task["id"], metadata={"task_id": task["id"]},
-                )
+                async with self._image_slots:
+                    generated = await self.provider.generate_image(
+                        prompt=f"{params.get('prompt') or '根据参考素材生成商业图片'}。9:16竖屏，真实商业摄影，无字幕无水印。",
+                        reference_urls=reference_urls[:9], request_id=task["id"], metadata={"task_id": task["id"]},
+                    )
                 if not generated.result_url:
                     raise ProductionError("图片生成未返回结果")
                 asset = self.repository.create_asset(
@@ -171,20 +210,87 @@ class ProductionManager:
         durations = split_duration(duration)
         image_urls = [a["storage_uri"] for a in assets if a.get("media_type") == "image" and a.get("storage_uri")]
         video_urls = [a["storage_uri"] for a in video_assets]
+        brief_packet = self.skill_runtime.execute(
+            task_id=task["id"], skill_id=self.brief_compiler.skill_id,
+            skill_version=self.brief_compiler.version, stage="brief",
+            public_label="需求与素材确认", inputs={"prompt": params.get("prompt"), "asset_count": len(assets)},
+            operation=lambda: self.brief_compiler.compile(
+                str(params.get("prompt") or ""), self._asset_context(assets),
+            ), blocking=True,
+        )
         async with self._planning_lock:
             raw = await self.provider.understand(
-                text=planning_prompt(brief=str(params.get("prompt") or ""), tool=kind, durations=durations, context=self._asset_context(assets)),
+                text=planning_prompt(brief=brief_packet["brief"], tool=kind, durations=durations, context=brief_packet["context"]),
                 image_urls=image_urls[:9], video_urls=video_urls[:3], request_id=f"{task['id']}:plan",
             )
-        shots = normalize_plan(raw, brief=str(params.get("prompt") or ""), durations=durations, tool=kind)
-        image_units = len(shots) * batch_count
+        plans = normalize_plan(raw, brief=str(params.get("prompt") or ""), durations=durations, tool=kind)
+        shots = self.skill_runtime.execute(
+            task_id=task["id"], skill_id=self.storyboard_compiler.skill_id,
+            skill_version=self.storyboard_compiler.version, stage="storyboard",
+            public_label="完整镜头合同", inputs=[plan.as_dict() for plan in plans],
+            operation=lambda: self.storyboard_compiler.compile(plans), blocking=True,
+        )
+        reference_manifest = self.skill_runtime.execute(
+            task_id=task["id"], skill_id=self.reference_compiler.skill_id,
+            skill_version=self.reference_compiler.version, stage="references",
+            public_label="引用角色校验", inputs={"images": image_urls, "videos": video_urls},
+            operation=lambda: self.reference_compiler.compile(image_urls[:9], video_urls[:3]), blocking=True,
+        )
+        shots = [replace(shot, reference_manifest=list(reference_manifest)) for shot in shots]
+        panel_specs = {shot.id: self.panel_planner.plan(shot) for shot in shots}
+        self.skill_runtime.execute(
+            task_id=task["id"], skill_id=self.panel_planner.skill_id,
+            skill_version=self.panel_planner.version, stage="storyboard",
+            public_label="逐镜Panel规划", inputs=[shot.as_dict() for shot in shots],
+            operation=lambda: {key: [panel.as_dict() for panel in value] for key, value in panel_specs.items()},
+            blocking=True,
+        )
+        image_units = sum(len(items) for items in panel_specs.values())
         self.repository.reserve(client_id=task["client_id"], resource="image", units=image_units, task_id=task["id"], client_limit=int(params.get("client_image_limit") or 1000), global_limit=self.global_image_limit)
         storyboard_rows = []
         try:
-            for shot in shots:
-                result = await self.provider.generate_image(prompt=f"商业短视频分镜图，第{shot.ordinal}镜：{shot.visual}。{shot.action}。{shot.camera}。9:16，真实摄影，无字幕无水印。", reference_urls=image_urls[:2], request_id=f"{task['id']}:storyboard:{shot.ordinal}", metadata={"task_id": task["id"], "shot": shot.ordinal})
-                asset = self.repository.create_asset(client_id=task["client_id"], source_type="storyboard", media_type="image", storage_uri=result.result_url, status="ready", metadata={"task_id": task["id"], "shot": shot.ordinal})
-                storyboard_rows.append({**shot.as_dict(), "description": shot.visual, "duration_seconds": shot.duration, "image_asset_id": asset["id"], "image_url": result.result_url, "status": "ready"})
+            async def generate_shot_panels(shot: Any) -> dict[str, Any]:
+                panels = []
+                previous_clean_url: str | None = None
+                for panel in panel_specs[shot.id]:
+                    panel_prompt = self.skill_runtime.execute(
+                        task_id=task["id"], skill_id=self.prompt_compiler.skill_id,
+                        skill_version=self.prompt_compiler.version, stage="storyboard",
+                        public_label=f"镜头{shot.ordinal} {panel.role}画格编译",
+                        inputs={"shot_id": shot.id, "panel": panel.as_dict()},
+                        operation=lambda shot=shot, panel=panel: self.prompt_compiler.compile(shot, panel),
+                        blocking=True,
+                    )
+                    async with self._image_slots:
+                        result = await self.provider.generate_image(
+                            prompt=panel_prompt,
+                            reference_urls=self._panel_references(image_urls, previous_clean_url),
+                            request_id=f"{task['id']}:storyboard:{shot.ordinal}:{panel.logical_key}",
+                            metadata={"task_id": task["id"], "shot": shot.ordinal, "panel": panel.logical_key,
+                                      "skill_pack": "full-storyboard-v1"},
+                        )
+                    if not result.result_url:
+                        raise ProductionError(f"镜头{shot.ordinal}的{panel.role} Panel未返回clean frame")
+                    previous_clean_url = result.result_url
+                    asset = self.repository.create_asset(
+                        client_id=task["client_id"], source_type="storyboard_clean", media_type="image",
+                        storage_uri=result.result_url, status="ready",
+                        metadata={"task_id": task["id"], "shot": shot.ordinal,
+                                  "panel": panel.logical_key, "clean": True},
+                    )
+                    panels.append({
+                        **panel.as_dict(), "id": uuid4().hex, "clean_asset_id": asset["id"],
+                        "selected_asset_id": asset["id"], "send_to_provider": True, "status": "draft",
+                        "metadata": {"prompt_hash_only": True},
+                    })
+                row = shot.as_dict()
+                row.update({
+                    "description": shot.visual, "duration_seconds": shot.duration_seconds,
+                    "image_asset_id": panels[0]["selected_asset_id"], "panels": panels, "status": "ready",
+                })
+                return row
+            storyboard_rows = list(await asyncio.gather(*(generate_shot_panels(shot) for shot in shots)))
+            storyboard_rows.sort(key=lambda item: int(item.get("ordinal") or 0))
             self.repository.commit(task_id=task["id"], resource="image", client_id=task["client_id"])
         except Exception:
             self.repository.release(task_id=task["id"], resource="image", client_id=task["client_id"])
@@ -193,6 +299,11 @@ class ProductionManager:
         message = self.repository.add_message(task["conversation_id"], role="assistant", kind="storyboard", content_text="故事板已完成。确认镜头、时长和额度后再开始生成视频。", content={"task_id": task["id"], "storyboard": board, "estimated_video_units": len(shots) * batch_count, "target_duration": duration}, client_id=task["client_id"])
         for index, row in enumerate(storyboard_rows): self.repository.bind_asset(message["id"], row["image_asset_id"], usage="storyboard", ordinal=index, client_id=task["client_id"])
         latest = self.repository.get_task(task["id"])
+        self.repository.append_workflow_event(
+            task["id"], client_id=task["client_id"], event_type="storyboard.ready",
+            payload={"storyboard_id": board["id"], "shots": len(shots), "panels": image_units,
+                     "clean_frames": len(shots), "version": board["revision"]},
+        )
         self.repository.update_task(task["id"], {"result_message_id": message["id"], "status": "waiting_approval", "stage": "storyboard_review", "progress": 0.35, "result": {"storyboard": board, "estimated_video_units": len(shots) * batch_count}}, expected_version=latest["version"])
 
     async def confirm(self, task_id: str, *, client_id: str, expected_version: int, approve: bool, note: str = "") -> dict[str, Any]:
@@ -203,16 +314,194 @@ class ProductionManager:
             params = {**task["params"], "revision_note": note}
             updated = self.repository.update_task(task_id, {"params": params, "status": "queued", "stage": "revision_requested", "progress": 0.1}, client_id=client_id, expected_version=expected_version)
             await self.enqueue(task_id); return updated
-        shots = self.repository.list_shots(task_id, client_id=client_id); units = len(shots) * max(1, int(task["params"].get("batch_count") or 1))
-        self.repository.reserve(client_id=client_id, resource="video", units=units, task_id=task_id, client_limit=int(task["params"].get("client_video_limit") or 100), global_limit=self.global_video_limit)
-        updated = self.repository.update_task(task_id, {"status": "queued", "stage": "confirmed", "progress": 0.4}, client_id=client_id, expected_version=expected_version)
-        self.repository.add_message(task["conversation_id"], role="assistant", kind="status", content_text=f"故事板已确认，开始生成 {len(shots)} 个镜头，预计消耗 {units} 条视频额度。", content={"task_id": task_id, "video_units": units}, client_id=client_id)
-        await self.enqueue(task_id); return updated
+        board = self._storyboard_for_task(task_id, client_id=client_id)
+        return await self.produce(board["id"], client_id=client_id, expected_version=int(board["revision"]), expected_task_version=expected_version)
+
+    def _storyboard_for_task(self, task_id: str, *, client_id: str) -> dict[str, Any]:
+        with self.repository.db.transaction() as conn:
+            row = conn.execute(
+                """SELECT s.id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.task_id=? AND t.client_id=? ORDER BY s.version DESC LIMIT 1""", (task_id, client_id),
+            ).fetchone()
+        if row is None:
+            raise WorkspaceConflict("task has no storyboard")
+        board = self.repository.get_storyboard(row["id"], client_id=client_id)
+        if board is None:
+            raise WorkspaceConflict("storyboard is unavailable")
+        return board
+
+    async def create_animatic(
+        self, storyboard_id: str, *, client_id: str, expected_version: int,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        board = self.repository.get_storyboard(storyboard_id, client_id=client_id)
+        if board is None:
+            raise WorkspaceConflict("storyboard is unavailable")
+        if int(board["revision"]) != expected_version:
+            raise WorkspaceConflict("storyboard version changed")
+        frame_urls: list[str] = []
+        durations: list[float] = []
+        for shot in board["shots"]:
+            selected = next((panel for panel in shot["panels"] if panel.get("selected_asset_id") and panel.get("send_to_provider")), None)
+            if selected is None:
+                raise ProductionError(f"镜头{shot['ordinal']}缺少selected clean frame")
+            asset = self.repository.get_asset(str(selected["selected_asset_id"]), client_id=client_id)
+            if asset is None or not asset.get("storage_uri"):
+                raise ProductionError(f"镜头{shot['ordinal']}的clean frame不可用")
+            frame_urls.append(str(asset["storage_uri"]))
+            durations.append(float(shot.get("duration_seconds") or 0))
+        if self.provider.__class__.__name__ == "FakeKernelProvider":
+            rendered = await self.provider.transcode(
+                frame_urls, filename=f"animatic-{storyboard_id}.mp4", request_id=f"{storyboard_id}:animatic",
+                metadata={"operation": "animatic", "durations": durations},
+            )
+            if not rendered.result_url:
+                raise ProductionError("动态预演未返回结果")
+            result_url = rendered.result_url
+        else:
+            output = await render_animatic_frames(frame_urls, durations)
+            result_url = await self.provider.upload_blob(
+                f"animatic-{storyboard_id}.mp4", output, "video/mp4",
+                stage="storyboard.animatic", request_id=f"{storyboard_id}:animatic",
+            )
+        asset = self.repository.create_asset(
+            client_id=client_id, source_type="animatic", media_type="video", storage_uri=result_url,
+            status="ready", metadata={"storyboard_id": storyboard_id, "durations": durations,
+                                      "duration_seconds": sum(durations), "preview_only": True},
+        )
+        board = self.repository.set_animatic(
+            storyboard_id, client_id=client_id, expected_version=expected_version,
+            asset_id=asset["id"], confirmed=False,
+        )
+        if confirm:
+            board = self.repository.confirm_animatic(
+                storyboard_id, client_id=client_id, expected_version=expected_version,
+            )
+        return board
+
+    async def regenerate_panel(
+        self, storyboard_id: str, panel_id: str, *, client_id: str,
+        expected_version: int, feedback: str = "",
+    ) -> dict[str, Any]:
+        board = self.repository.get_storyboard(storyboard_id, client_id=client_id)
+        if board is None or int(board["revision"]) != expected_version:
+            raise WorkspaceConflict("storyboard version changed")
+        shot = next((item for item in board["shots"] if any(panel["id"] == panel_id for panel in item["panels"])), None)
+        panel = next((item for item in (shot or {}).get("panels", []) if item["id"] == panel_id), None)
+        if shot is None or panel is None:
+            raise WorkspaceConflict("panel is unavailable")
+        task = self.repository.get_task(board["task_id"], client_id=client_id)
+        if task is None:
+            raise WorkspaceConflict("task is unavailable")
+        reservation = self.repository.reserve(
+            client_id=client_id, resource="image", units=1,
+            client_limit=int(task["params"].get("client_image_limit") or 1000),
+            global_limit=self.global_image_limit,
+        )
+        try:
+            payload = shot.get("payload") or {}
+            prompt = (
+                f"9:16真实商业摄影clean frame。镜头：{shot.get('description') or payload.get('visual')}。"
+                f"Panel状态：{feedback or panel.get('description')}。保持产品结构、主体身份和空间方向。"
+                "无字幕、无标注、无箭头、无网格、无水印。"
+            )
+            references = [
+                asset["storage_uri"] for item in shot["panels"]
+                if item["id"] != panel_id and item.get("selected_asset_id")
+                and (asset := self.repository.get_asset(str(item["selected_asset_id"]), client_id=client_id))
+                and asset.get("storage_uri")
+            ][:8]
+            async with self._image_slots:
+                result = await self.provider.generate_image(
+                    prompt=prompt, reference_urls=references,
+                    request_id=f"{board['task_id']}:panel:{panel_id}:r{int(panel['revision']) + 1}",
+                    metadata={"task_id": board["task_id"], "shot_id": shot["id"], "panel_id": panel_id},
+                )
+            if not result.result_url:
+                raise ProductionError("Panel重生成未返回clean frame")
+            asset = self.repository.create_asset(
+                client_id=client_id, source_type="storyboard_clean", media_type="image",
+                storage_uri=result.result_url, status="ready",
+                metadata={"task_id": board["task_id"], "shot_id": shot["id"], "replaces_panel": panel_id},
+            )
+            revised = self.repository.revise_panel(
+                panel_id, client_id=client_id, expected_version=expected_version,
+                clean_asset_id=asset["id"], description=feedback or panel.get("description"),
+            )
+            self.repository.commit(reservation_id=reservation["reservation"]["id"], client_id=client_id)
+            return revised
+        except Exception:
+            self.repository.release(reservation_id=reservation["reservation"]["id"], client_id=client_id)
+            raise
+
+    async def produce(
+        self, storyboard_id: str, *, client_id: str, expected_version: int,
+        expected_task_version: int | None = None,
+    ) -> dict[str, Any]:
+        board = self.repository.get_storyboard(storyboard_id, client_id=client_id)
+        if board is None or int(board["revision"]) != expected_version:
+            raise WorkspaceConflict("storyboard version changed")
+        task = self.repository.get_task(board["task_id"], client_id=client_id)
+        if task is None or task["status"] != "waiting_approval":
+            raise WorkspaceConflict("task is not waiting for storyboard approval")
+        self.skill_runtime.execute(
+            task_id=task["id"], storyboard_id=storyboard_id, skill_id=self.shot_gate.skill_id,
+            skill_version=self.shot_gate.version, stage="preflight", public_label="生产前完整性门禁",
+            inputs={"revision": expected_version, "coverage": board.get("coverage")},
+            operation=lambda: self.shot_gate.require(board), blocking=True,
+        )
+        self.skill_runtime.execute(
+            task_id=task["id"], storyboard_id=storyboard_id, skill_id=self.approval_policy.skill_id,
+            skill_version=self.approval_policy.version, stage="approval", public_label="审批与动态预演确认",
+            inputs={"revision": expected_version, "approval_count": len(board.get("approvals") or [])},
+            operation=lambda: self.approval_policy.require(board), blocking=True,
+        )
+        board = self.repository.freeze_storyboard(
+            storyboard_id, client_id=client_id, expected_version=expected_version,
+        )
+        units = len(board["shots"]) * max(1, int(task["params"].get("batch_count") or 1))
+        reservation = self.repository.reserve(
+            client_id=client_id, resource="video", units=units, task_id=task["id"],
+            client_limit=int(task["params"].get("client_video_limit") or 100),
+            global_limit=self.global_video_limit,
+        )
+        try:
+            updated = self.repository.update_task(
+                task["id"], {"status": "queued", "stage": "confirmed", "progress": 0.4},
+                client_id=client_id, expected_version=expected_task_version or task["version"],
+            )
+            self.repository.add_message(
+                task["conversation_id"], role="assistant", kind="status",
+                content_text=f"故事板和动态预演已确认，开始生成 {len(board['shots'])} 个镜头，预计消耗 {units} 条视频额度。",
+                content={"task_id": task["id"], "video_units": units, "storyboard_id": storyboard_id},
+                client_id=client_id,
+            )
+            await self.enqueue(task["id"])
+            return updated
+        except Exception:
+            try:
+                self.repository.release(
+                    reservation_id=reservation["reservation"]["id"], client_id=client_id,
+                )
+            except Exception:
+                pass
+            raise
 
     async def _wait_video(self, result: Any, request_id: str) -> Any:
-        deadline = asyncio.get_running_loop().time() + self.poll_timeout
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + self.poll_timeout
+        task_id = request_id.split(":", 1)[0]
+        task = self.repository.get_task(task_id)
         while result.status not in {"success", "failed", "cancelled"}:
-            if asyncio.get_running_loop().time() >= deadline: raise ProductionError("视频生成等待超时，任务编号已保留")
+            if loop.time() >= deadline: raise ProductionError("视频生成等待超时，任务编号已保留")
+            if task:
+                self.repository.append_workflow_event(
+                    task_id, client_id=task["client_id"], event_type="provider.waiting",
+                    payload={"indeterminate": True, "waited_seconds": int(loop.time() - started),
+                             "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                             "message": "生成服务正在处理，任务已保存"},
+                )
             await asyncio.sleep(self.poll_interval); result = await self.provider.poll_video(result.submit_id, request_id=request_id)
         if result.status != "success" or not result.result_url: raise ProductionError(result.failure_reason or "视频生成失败")
         await self._probe_video(result.result_url, request_id=f"{request_id}:qc")
@@ -229,7 +518,12 @@ class ProductionManager:
         return probe
 
     async def _execute(self, task: dict[str, Any]) -> None:
-        params = task["params"]; assets = self._task_assets(task); shots = self.repository.list_shots(task["id"], client_id=task["client_id"])
+        params = task["params"]; assets = self._task_assets(task)
+        board = self._storyboard_for_task(task["id"], client_id=task["client_id"])
+        self.shot_gate.require(board)
+        if not board.get("frozen_snapshot_hash"):
+            raise ProductionError("故事板尚未冻结，禁止提交视频")
+        shots = board["shots"]
         if not shots: raise ProductionError("任务缺少已确认故事板")
         self.repository.update_task(task["id"], {"status": "generating", "stage": "generating", "progress": 0.45})
         source_videos = [a["storage_uri"] for a in assets if a.get("media_type") == "video" and a.get("storage_uri")]
@@ -253,7 +547,15 @@ class ProductionManager:
                 nonlocal completed_segments
                 segment_urls: list[str] = []
                 for index, shot in enumerate(shots):
-                    image_asset = self.repository.get_asset(str(shot.get("image_asset_id")), client_id=task["client_id"])
+                    clean_assets = []
+                    for panel in shot.get("panels") or []:
+                        if not (panel.get("approved") and panel.get("send_to_provider") and panel.get("selected_asset_id")):
+                            continue
+                        asset = self.repository.get_asset(str(panel["selected_asset_id"]), client_id=task["client_id"])
+                        if asset and asset.get("storage_uri"):
+                            clean_assets.append(asset)
+                    if not clean_assets:
+                        raise ProductionError(f"镜头{shot.get('ordinal')}没有已批准的clean frame")
                     video_refs = []
                     if task["kind"] == "replicate" and source_videos: video_refs.append(source_videos[0])
                     if segment_urls: video_refs.append(segment_urls[-1])
@@ -265,7 +567,7 @@ class ProductionManager:
                         previous_slot = 2 if task["kind"] == "replicate" and source_videos else 1
                         reference_rules.append(f"视频{previous_slot}是上一镜头，只用于动作、构图和时间连续性")
                     async with self._generation_slots:
-                        result = await self.provider.submit_video(prompt=f"{'；'.join(reference_rules)}。{prompt}。第{variant + 1}个差异化版本。保持故事板主体与9:16构图，无字幕无水印。", image_urls=[image_asset["storage_uri"]] if image_asset and image_asset.get("storage_uri") else replacement_images[:1], video_urls=video_refs[:3], duration=int(round(float(shot.get("duration_seconds") or 5))), request_id=f"{task['id']}:v{variant + 1}:s{index + 1}", metadata={"task_id": task["id"], "variant": variant + 1, "shot": index + 1, "reference_manifest": {"image1": "storyboard_identity", "video1": "source_structure" if task["kind"] == "replicate" and source_videos else "previous_continuity"}})
+                        result = await self.provider.submit_video(prompt=f"{'；'.join(reference_rules)}。{prompt}。第{variant + 1}个差异化版本。保持故事板主体与9:16构图，无字幕无水印。", image_urls=[asset["storage_uri"] for asset in clean_assets][:9], video_urls=video_refs[:3], duration=int(round(float(shot.get("duration_seconds") or 5))), request_id=f"{task['id']}:v{variant + 1}:s{index + 1}", metadata={"task_id": task["id"], "storyboard_id": board["id"], "storyboard_snapshot": board["frozen_snapshot_hash"], "shot_id": shot["id"], "variant": variant + 1, "shot": index + 1, "reference_manifest": shot.get("payload", {}).get("reference_manifest", [])})
                         result = await self._wait_video(result, f"{task['id']}:v{variant + 1}:s{index + 1}")
                     segment_urls.append(result.result_url)
                     async with progress_lock:

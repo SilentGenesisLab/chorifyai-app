@@ -246,6 +246,103 @@ CREATE INDEX IF NOT EXISTS idx_quota_ledger_client_day
 """
 
 
+SCHEMA_V3 = """
+ALTER TABLE storyboards ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE storyboards ADD COLUMN updated_at TEXT;
+ALTER TABLE storyboards ADD COLUMN animatic_asset_id TEXT REFERENCES assets(id);
+ALTER TABLE storyboards ADD COLUMN animatic_status TEXT NOT NULL DEFAULT 'missing';
+ALTER TABLE storyboards ADD COLUMN animatic_confirmed_at TEXT;
+ALTER TABLE storyboards ADD COLUMN frozen_snapshot_hash TEXT;
+ALTER TABLE storyboard_shots ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+UPDATE storyboards SET updated_at=created_at WHERE updated_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS storyboard_panels (
+  id TEXT PRIMARY KEY,
+  storyboard_id TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+  shot_id TEXT NOT NULL REFERENCES storyboard_shots(id) ON DELETE CASCADE,
+  logical_key TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  role TEXT NOT NULL,
+  required INTEGER NOT NULL DEFAULT 1,
+  description TEXT NOT NULL DEFAULT '',
+  annotation_json TEXT NOT NULL DEFAULT '{}',
+  annotated_asset_id TEXT REFERENCES assets(id),
+  clean_asset_id TEXT REFERENCES assets(id),
+  selected_asset_id TEXT REFERENCES assets(id),
+  send_to_provider INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  superseded_at TEXT,
+  UNIQUE(shot_id, logical_key, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_storyboard_panels_shot_current
+  ON storyboard_panels(shot_id, logical_key, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_storyboard_panels_board
+  ON storyboard_panels(storyboard_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS skill_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES task_runs(id),
+  storyboard_id TEXT REFERENCES storyboards(id),
+  shot_id TEXT REFERENCES storyboard_shots(id),
+  skill_id TEXT NOT NULL,
+  skill_version TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL,
+  blocking INTEGER NOT NULL DEFAULT 0,
+  public_label TEXT NOT NULL,
+  input_hash TEXT NOT NULL,
+  output_hash TEXT NOT NULL,
+  input_count INTEGER NOT NULL DEFAULT 0,
+  output_count INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  blocking_reason TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  private_trace_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skill_runs_task_created ON skill_runs(task_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS workflow_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL REFERENCES task_runs(id),
+  client_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  envelope_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_task_id ON workflow_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_client_id ON workflow_events(client_id, id);
+
+CREATE TABLE IF NOT EXISTS approval_decisions (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES task_runs(id),
+  storyboard_id TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  feedback TEXT NOT NULL DEFAULT '',
+  expected_version INTEGER NOT NULL,
+  target_revision INTEGER NOT NULL,
+  snapshot_hash TEXT,
+  idempotency_key TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(client_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_approval_decisions_board_created
+  ON approval_decisions(storyboard_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_approval_decisions_target
+  ON approval_decisions(scope, target_id, created_at, id);
+"""
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -276,6 +373,19 @@ class Database:
                         + "\nINSERT INTO schema_migrations(version, applied_at) "
                         "VALUES(2, strftime('%Y-%m-%dT%H:%M:%fZ','now'));\n"
                         "PRAGMA user_version=2;\nCOMMIT;"
+                    )
+                except Exception:
+                    conn.rollback()
+                    raise
+                applied.add(2)
+            if 3 not in applied:
+                try:
+                    conn.executescript(
+                        "BEGIN IMMEDIATE;\n"
+                        + SCHEMA_V3
+                        + "\nINSERT INTO schema_migrations(version, applied_at) "
+                        "VALUES(3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));\n"
+                        "PRAGMA user_version=3;\nCOMMIT;"
                     )
                 except Exception:
                     conn.rollback()

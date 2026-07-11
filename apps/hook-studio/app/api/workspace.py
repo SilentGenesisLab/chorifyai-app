@@ -10,8 +10,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.quota import next_reset_at
@@ -107,24 +107,113 @@ def _bound_assets(repo: WorkspaceRepository, message_id: str) -> list[tuple[dict
 
 
 def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estimated: int | None = None) -> dict[str, Any]:
+    if board.get("id"):
+        with repo.db.transaction() as conn:
+            owner = conn.execute(
+                """SELECT t.client_id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.id=?""", (board["id"],),
+            ).fetchone()
+        if owner:
+            full = repo.get_storyboard(board["id"], client_id=owner["client_id"])
+            if full:
+                board = full
     shots = []
     for shot in board.get("shots") or []:
         image_asset = repo.get_asset(str(shot.get("image_asset_id"))) if shot.get("image_asset_id") else None
         payload = shot.get("payload") or {}
+        panels = []
+        for panel in shot.get("panels") or []:
+            selected = repo.get_asset(str(panel.get("selected_asset_id"))) if panel.get("selected_asset_id") else None
+            annotated = repo.get_asset(str(panel.get("annotated_asset_id"))) if panel.get("annotated_asset_id") else None
+            approved = bool(panel.get("approved"))
+            public_role = "end" if panel.get("role") == "result" else panel.get("role")
+            panels.append({
+                "id": panel["id"], "logical_key": panel.get("logical_key"),
+                "order": panel.get("ordinal"), "revision": panel.get("revision", 1),
+                "role": public_role, "required": bool(panel.get("required")),
+                "description": panel.get("description") or "", "annotation": panel.get("annotation") or {},
+                "clean_asset_id": panel.get("clean_asset_id"), "selected_asset_id": panel.get("selected_asset_id"),
+                "clean_url": (selected or {}).get("storage_uri") or "",
+                "annotated_url": (annotated or {}).get("storage_uri") or "",
+                "send_to_provider": bool(panel.get("send_to_provider")),
+                "approved": approved, "status": "approved" if approved else panel.get("status") or "draft",
+                "approval": {"scope": "panel", "scope_id": panel["id"], "decision": "approved",
+                             "version": panel.get("revision", 1)} if approved else None,
+            })
+        contract = {key: payload.get(key) for key in (
+            "story_function", "visual", "shot_size", "camera_angle", "camera_height", "lens_feel",
+            "composition", "action_start", "action_trigger", "action_result", "camera_move", "sound",
+            "transition", "stable_truth", "may_vary", "reference_manifest", "first_failure_cue",
+        )}
         shots.append({
             "id": shot["id"], "order": shot.get("ordinal"), "title": shot.get("title") or f"镜头 {shot.get('ordinal')}",
             "description": shot.get("description") or "", "duration_seconds": shot.get("duration_seconds") or 0,
             "image_url": (image_asset or {}).get("storage_uri") or payload.get("image_url") or "",
-            "status": "approved" if board.get("status") == "confirmed" else "draft",
+            "revision": shot.get("revision", 1), "approved": bool(shot.get("approved")),
+            "status": "approved" if shot.get("approved") else "draft", "panels": panels,
+            **contract, "action_end": contract.get("action_result"), "lens": contract.get("lens_feel"),
+            "audio": contract.get("sound"),
+            "selected_clean_frame_url": next((panel["clean_url"] for panel in panels if panel["send_to_provider"]), ""),
+            "approval": {"scope": "shot", "scope_id": shot["id"], "decision": "approved",
+                         "version": shot.get("revision", 1)} if shot.get("approved") else None,
+            "contract": contract,
         })
     total = sum(float(item["duration_seconds"] or 0) for item in shots)
     raw_status = board.get("status")
     public_status = "confirmed" if raw_status == "confirmed" else "revision_required" if raw_status == "revision_required" else "pending"
+    animatic_asset = repo.get_asset(str(board.get("animatic_asset_id"))) if board.get("animatic_asset_id") else None
+    coverage = board.get("coverage") or {
+        "shots_total": len(shots), "shots_approved": sum(1 for shot in shots if shot["approved"]),
+        "panels_total": sum(len(shot["panels"]) for shot in shots),
+        "panels_approved": sum(1 for shot in shots for panel in shot["panels"] if panel["approved"]),
+        "clean_frames": sum(1 for shot in shots if any(panel.get("selected_asset_id") for panel in shot["panels"])),
+    }
+    skill_runs = [{
+        "id": item["id"], "skill_id": item.get("skill_id"), "version": item.get("skill_version"),
+        "stage": item.get("stage"), "status": "succeeded" if item.get("status") == "passed" else item.get("status"), "blocking": bool(item.get("blocking")),
+        "label": item.get("public_label"), "duration_ms": item.get("duration_ms"), "latency_ms": item.get("duration_ms"),
+        "input_count": item.get("input_count"), "output_count": item.get("output_count"),
+        "retry_count": item.get("retry_count"), "blocking_reason": item.get("blocking_reason"),
+    } for item in board.get("skill_runs") or []]
+    can_produce = bool(
+        shots and coverage.get("shots_approved") == coverage.get("shots_total")
+        and coverage.get("panels_approved") == coverage.get("panels_total")
+        and coverage.get("clean_frames") == coverage.get("shots_total")
+        and board.get("board_approved") and board.get("animatic_status") == "confirmed"
+    )
+    blockers = []
+    if coverage.get("shots_approved") != coverage.get("shots_total"): blockers.append("仍有镜头等待批准")
+    if coverage.get("panels_approved") != coverage.get("panels_total"): blockers.append("仍有必需Panel等待批准")
+    if coverage.get("clean_frames") != coverage.get("shots_total"): blockers.append("clean frame尚未覆盖全部镜头")
+    if not board.get("board_approved"): blockers.append("整板尚未批准")
+    if board.get("animatic_status") != "confirmed": blockers.append("动态预演尚未确认")
+    public_coverage = {
+        **coverage,
+        "shot_total": coverage.get("shots_total", len(shots)),
+        "shot_ready": len(shots),
+        "panel_required": coverage.get("panels_total", 0),
+        "panel_ready": coverage.get("panels_total", 0),
+        "clean_ready": coverage.get("clean_frames", 0),
+        "approved_shots": coverage.get("shots_approved", 0),
+    }
     return {
         "id": board["id"], "version": f"v{board.get('version', 1)}",
+        "task_id": board.get("task_id"),
+        "revision": int(board.get("revision") or 1),
         "status": public_status,
         "summary": board.get("summary") or "", "total_duration_seconds": total,
         "estimated_video_units": estimated or len(shots), "shots": shots,
+        "coverage": public_coverage, "board_approved": bool(board.get("board_approved")),
+        "animatic": {"id": board.get("animatic_asset_id") or f"animatic-{board['id']}",
+                     "status": board.get("animatic_status") or "missing",
+                     "asset_id": board.get("animatic_asset_id"),
+                     "url": (animatic_asset or {}).get("storage_uri") or "", "duration_seconds": total,
+                     "version": int(board.get("revision") or 1),
+                     "confirmed": board.get("animatic_status") == "confirmed"},
+        "skill_runs": skill_runs, "can_produce": can_produce,
+        "guard": {"can_produce": can_produce, "blockers": blockers},
+        "frozen": bool(board.get("frozen_snapshot_hash")),
+        "updated_at": board.get("updated_at") or board.get("created_at"),
     }
 
 
@@ -304,6 +393,54 @@ class BatchDownloadInput(BaseModel):
     asset_ids: list[str] = Field(min_length=1, max_length=100)
 
 
+class ShotPatch(BaseModel):
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    duration_seconds: float | None = Field(default=None, ge=4, le=15)
+    story_function: str | None = Field(default=None, max_length=1000)
+    visual: str | None = Field(default=None, max_length=4000)
+    shot_size: str | None = Field(default=None, max_length=120)
+    camera_angle: str | None = Field(default=None, max_length=120)
+    camera_height: str | None = Field(default=None, max_length=120)
+    lens_feel: str | None = Field(default=None, max_length=120)
+    composition: str | None = Field(default=None, max_length=2000)
+    action_start: str | None = Field(default=None, max_length=2000)
+    action_trigger: str | None = Field(default=None, max_length=2000)
+    action_result: str | None = Field(default=None, max_length=2000)
+    camera_move: str | None = Field(default=None, max_length=1000)
+    sound: str | None = Field(default=None, max_length=1000)
+    transition: str | None = Field(default=None, max_length=1000)
+    stable_truth: list[str] | None = Field(default=None, max_length=20)
+    may_vary: list[str] | None = Field(default=None, max_length=20)
+    reference_manifest: list[dict[str, Any]] | None = Field(default=None, max_length=12)
+    first_failure_cue: str | None = Field(default=None, max_length=2000)
+
+
+class PanelRegenerateInput(BaseModel):
+    expected_version: int = Field(ge=1)
+    feedback: str = Field(default="", max_length=4000)
+
+
+class ScopedDecisionInput(BaseModel):
+    expected_version: int = Field(ge=1)
+    scope: str
+    target_id: str = ""
+    scope_id: str = ""
+    decision: str
+    feedback: str = Field(default="", max_length=4000)
+    idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class AnimaticInput(BaseModel):
+    expected_version: int = Field(ge=1)
+    confirm: bool = False
+
+
+class ProduceInput(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
 @router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict[str, Any]:
     principal = _principal(request)
@@ -383,6 +520,12 @@ async def send_message(
     principal = _principal(request); client_id = str(_value(principal, "code_id")); repo = _repo(request)
     if tool not in TOOL_MAP:
         raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "不支持的生产工具"})
+    declared_kind = TOOL_MAP[tool][0]
+    if declared_kind in {"create", "replicate", "batch"}:
+        if duration_seconds is None:
+            raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "请先确认视频总时长（4-60秒）"})
+        if duration_seconds < 4 or duration_seconds > 60:
+            raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "视频总时长必须为4-60秒"})
     try:
         parsed_links = json.loads(links or "[]")
         if not isinstance(parsed_links, list) or len(parsed_links) > 10:
@@ -452,6 +595,101 @@ async def confirm_storyboard(storyboard_id: str, payload: StoryboardDecision, re
         raise _http_error(exc) from exc
 
 
+@router.get("/storyboards/{storyboard_id}")
+async def storyboard_detail(storyboard_id: str, request: Request) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    board = _repo(request).get_storyboard(storyboard_id, client_id=client_id)
+    if board is None:
+        raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "故事板不存在"})
+    return _storyboard_payload(_repo(request), board)
+
+
+@router.patch("/storyboards/{storyboard_id}/shots/{shot_id}")
+async def patch_storyboard_shot(
+    storyboard_id: str, shot_id: str, payload: ShotPatch, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    values = payload.model_dump(exclude={"expected_version"}, exclude_none=True)
+    try:
+        board = _repo(request).patch_storyboard_shot(
+            storyboard_id, shot_id, client_id=client_id,
+            expected_version=payload.expected_version, values=values,
+        )
+        return _storyboard_payload(_repo(request), board)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/storyboards/{storyboard_id}/panels/{panel_id}/regenerate")
+async def regenerate_storyboard_panel(
+    storyboard_id: str, panel_id: str, payload: PanelRegenerateInput, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        board = await request.app.state.production.regenerate_panel(
+            storyboard_id, panel_id, client_id=client_id,
+            expected_version=payload.expected_version, feedback=payload.feedback,
+        )
+        return _storyboard_payload(_repo(request), board)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/storyboards/{storyboard_id}/decisions")
+async def storyboard_decision(
+    storyboard_id: str, payload: ScopedDecisionInput, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        scope = "board" if payload.scope == "storyboard" else payload.scope
+        target_id = payload.target_id or payload.scope_id
+        if scope == "animatic" and payload.decision == "approved":
+            board = _repo(request).confirm_animatic(
+                storyboard_id, client_id=client_id, expected_version=payload.expected_version,
+            )
+        else:
+            _repo(request).record_approval(
+                storyboard_id=storyboard_id, client_id=client_id, scope=scope,
+                target_id=target_id, decision=payload.decision,
+                expected_version=payload.expected_version, feedback=payload.feedback,
+                idempotency_key=payload.idempotency_key,
+            )
+            board = _repo(request).get_storyboard(storyboard_id, client_id=client_id)
+            assert board is not None
+        return _storyboard_payload(_repo(request), board)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/storyboards/{storyboard_id}/animatic")
+async def create_storyboard_animatic(
+    storyboard_id: str, payload: AnimaticInput, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        board = await request.app.state.production.create_animatic(
+            storyboard_id, client_id=client_id, expected_version=payload.expected_version,
+            confirm=payload.confirm,
+        )
+        return _storyboard_payload(_repo(request), board)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/storyboards/{storyboard_id}/produce", status_code=202)
+async def produce_storyboard(
+    storyboard_id: str, payload: ProduceInput, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        task = await request.app.state.production.produce(
+            storyboard_id, client_id=client_id, expected_version=payload.expected_version,
+        )
+        return {"task": _task_payload(task)}
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
 @router.get("/tasks")
 async def tasks(request: Request, conversation_id: str | None = None) -> dict[str, Any]:
     client_id = str(_value(_principal(request), "code_id"))
@@ -467,6 +705,25 @@ async def task(task_id: str, request: Request) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "任务不存在"})
     return _task_payload(row)
+
+
+@router.get("/tasks/{task_id}/events")
+async def task_events(
+    task_id: str, request: Request,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    client_id = str(_value(_principal(request), "code_id"))
+    if _repo(request).get_task(task_id, client_id=client_id) is None:
+        raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "任务不存在"})
+    try:
+        cursor = int(last_event_id or 0)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "Last-Event-ID无效"}) from exc
+    return StreamingResponse(
+        request.app.state.workflow_events.iter_sse(task_id, client_id=client_id, last_event_id=cursor),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @router.post("/tasks/{task_id}/cancel")

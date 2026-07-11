@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -15,7 +16,7 @@ class MediaOperationError(RuntimeError):
 
 async def download(url: str, target: Path, *, max_bytes: int = 1024 * 1024 * 1024) -> Path:
     total = 0
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True, trust_env=False) as client:
         async with client.stream("GET", url) as response:
             response.raise_for_status()
             with target.open("wb") as handle:
@@ -66,4 +67,37 @@ async def replace_segment_file(source_url: str, replacement_url: str, *, start: 
         concat = root / "concat.txt"
         concat.write_text("".join(f"file '{path.as_posix()}'\n" for path in parts), encoding="utf-8")
         await run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat), "-c:v", "libx264", "-c:a", "aac", str(output)])
+        return output.read_bytes()
+
+
+async def render_animatic_frames(frame_urls: list[str], durations: list[float]) -> bytes:
+    if not frame_urls or len(frame_urls) != len(durations):
+        raise MediaOperationError("动态预演需要每镜一张clean frame和对应时长")
+    if any(duration < 4 or duration > 15 for duration in durations):
+        raise MediaOperationError("动态预演镜头时长必须为4-15秒")
+    with tempfile.TemporaryDirectory(prefix="hook-animatic-") as temp:
+        root = Path(temp)
+        frames = []
+        for index, url in enumerate(frame_urls):
+            suffix = Path(urlsplit(url).path).suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                suffix = ".png"
+            frames.append(root / f"frame-{index:03d}{suffix}")
+        await asyncio.gather(*(download(url, target, max_bytes=30 * 1024 * 1024) for url, target in zip(frame_urls, frames)))
+        clips: list[Path] = []
+        for index, (frame, duration) in enumerate(zip(frames, durations)):
+            clip = root / f"clip-{index:03d}.mp4"
+            await run_ffmpeg([
+                "-loop", "1", "-t", f"{duration:.3f}", "-i", str(frame),
+                "-vf", "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+                "-r", "30", "-c:v", "libx264", "-an", str(clip),
+            ])
+            clips.append(clip)
+        concat = root / "animatic.txt"
+        concat.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8")
+        output = root / "animatic.mp4"
+        await run_ffmpeg([
+            "-f", "concat", "-safe", "0", "-i", str(concat),
+            "-c", "copy", "-movflags", "+faststart", str(output),
+        ])
         return output.read_bytes()

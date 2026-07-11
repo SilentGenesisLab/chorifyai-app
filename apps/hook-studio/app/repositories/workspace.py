@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -20,6 +21,10 @@ JSON_FIELDS = {
     "output_json": "output",
     "labels_json": "labels",
     "quality_json": "quality",
+    "annotation_json": "annotation",
+    "evidence_json": "evidence",
+    "private_trace_json": "private_trace",
+    "envelope_json": "envelope",
 }
 
 
@@ -77,6 +82,46 @@ def _decode(row: Any) -> dict[str, Any]:
         if source in result:
             result[target] = _loads(result.pop(source), {})
     return result
+
+
+def _snapshot_hash(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _insert_workflow_event(
+    conn: Any, *, task_id: str, client_id: str, event_type: str,
+    payload: dict[str, Any] | None = None, created_at: str | None = None,
+) -> dict[str, Any]:
+    timestamp = created_at or _now()
+    cursor = conn.execute(
+        "INSERT INTO workflow_events(task_id,client_id,event_type,envelope_json,created_at) VALUES(?,?,?,?,?)",
+        (task_id, client_id, event_type, "{}", timestamp),
+    )
+    event_id = int(cursor.lastrowid)
+    data = payload or {}
+    envelope = {
+        "schema": "hook.event.v1", "id": event_id, "task_id": task_id,
+        "type": event_type, "ts": timestamp, "data": data,
+    }
+    public_label = data.get("public_label") or data.get("label")
+    message = data.get("message")
+    state = data.get("state") or data.get("status")
+    queue = data.get("counts") if isinstance(data.get("counts"), dict) else data.get("queue")
+    snapshot = data.get("snapshot") or data.get("counts")
+    for key, value in (
+        ("public_label", public_label), ("message", message), ("state", state),
+        ("input_count", data.get("input_count")), ("output_count", data.get("output_count")),
+        ("heartbeat_at", data.get("last_heartbeat")), ("queue", queue), ("snapshot", snapshot),
+    ):
+        if value not in (None, ""):
+            envelope[key] = value
+    conn.execute(
+        "UPDATE workflow_events SET envelope_json=? WHERE id=?",
+        (json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), event_id),
+    )
+    return {"id": event_id, "task_id": task_id, "client_id": client_id,
+            "event_type": event_type, "envelope": envelope, "created_at": timestamp}
 
 
 class WorkspaceRepository:
@@ -298,6 +343,11 @@ class WorkspaceRepository:
                  "{}", timestamp, timestamp),
             )
             row = conn.execute("SELECT * FROM task_runs WHERE id=?", (task_id,)).fetchone()
+            _insert_workflow_event(
+                conn, task_id=task_id, client_id=client_id, event_type="task.created",
+                payload={"status": status, "stage": stage, "progress": progress, "version": 1},
+                created_at=timestamp,
+            )
         return _decode(row)
 
     def get_task(self, task_id: str, *, client_id: str | None = None) -> dict[str, Any] | None:
@@ -349,6 +399,14 @@ class WorkspaceRepository:
                     raise WorkspaceConflict("task version changed")
                 raise WorkspaceNotFound("task not found")
             row = conn.execute("SELECT * FROM task_runs WHERE id=?", (task_id,)).fetchone()
+            _insert_workflow_event(
+                conn, task_id=task_id, client_id=row["client_id"], event_type="task.updated",
+                payload={
+                    "status": row["status"], "stage": row["stage"],
+                    "progress": row["progress"], "version": row["version"],
+                    "indeterminate": row["status"] in {"planning", "generating", "assembling"},
+                },
+            )
         return _decode(row)
 
     def list_tasks(
@@ -391,8 +449,10 @@ class WorkspaceRepository:
                 "SELECT COALESCE(MAX(version),0)+1 AS version FROM storyboards WHERE task_id=?", (task_id,),
             ).fetchone()["version"])
             conn.execute(
-                "INSERT INTO storyboards(id,task_id,version,status,summary,created_at) VALUES(?,?,?,?,?,?)",
-                (storyboard_id, task_id, version, status, summary, timestamp),
+                """INSERT INTO storyboards(
+                id,task_id,version,status,summary,created_at,updated_at,revision
+                ) VALUES(?,?,?,?,?,?,?,1)""",
+                (storyboard_id, task_id, version, status, summary, timestamp, timestamp),
             )
             seen: set[int] = set()
             for index, shot in enumerate(shots, start=1):
@@ -400,27 +460,58 @@ class WorkspaceRepository:
                 if ordinal in seen:
                     raise WorkspaceConflict("storyboard shot ordinals must be unique")
                 seen.add(ordinal)
-                image_asset_id = shot.get("image_asset_id")
+                panel_values = list(shot.get("panels") or [])
+                image_asset_id = shot.get("image_asset_id") or next(
+                    (panel.get("selected_asset_id") or panel.get("clean_asset_id") for panel in panel_values
+                     if panel.get("selected_asset_id") or panel.get("clean_asset_id")), None,
+                )
                 if image_asset_id:
                     asset = conn.execute("SELECT client_id FROM assets WHERE id=?", (image_asset_id,)).fetchone()
                     if asset is None or asset["client_id"] != task["client_id"]:
                         raise WorkspaceConflict("storyboard image asset has a different owner")
-                known = {"id", "ordinal", "title", "description", "duration_seconds", "image_asset_id", "status"}
+                known = {"id", "ordinal", "title", "description", "duration_seconds", "image_asset_id", "status", "panels"}
                 payload = {key: value for key, value in shot.items() if key not in known}
+                shot_id = shot.get("id") or uuid4().hex
                 conn.execute(
                     """INSERT INTO storyboard_shots(
                     id,storyboard_id,ordinal,title,description,duration_seconds,image_asset_id,status,payload_json
                     ) VALUES(?,?,?,?,?,?,?,?,?)""",
-                    (shot.get("id") or uuid4().hex, storyboard_id, ordinal, shot.get("title"),
+                    (shot_id, storyboard_id, ordinal, shot.get("title"),
                      shot.get("description"), shot.get("duration_seconds"), image_asset_id,
                      shot.get("status", "draft"), json.dumps(payload, ensure_ascii=False)),
                 )
+                for panel_index, panel in enumerate(panel_values, start=1):
+                    panel_ordinal = int(panel.get("ordinal") or panel_index)
+                    logical_key = str(panel.get("logical_key") or panel.get("role") or f"panel-{panel_ordinal}")
+                    clean_asset_id = panel.get("clean_asset_id")
+                    selected_asset_id = panel.get("selected_asset_id") or clean_asset_id
+                    annotated_asset_id = panel.get("annotated_asset_id")
+                    for candidate_id in (clean_asset_id, selected_asset_id, annotated_asset_id):
+                        if not candidate_id:
+                            continue
+                        candidate = conn.execute("SELECT client_id FROM assets WHERE id=?", (candidate_id,)).fetchone()
+                        if candidate is None or candidate["client_id"] != task["client_id"]:
+                            raise WorkspaceConflict("storyboard panel asset has a different owner")
+                    conn.execute(
+                        """INSERT INTO storyboard_panels(
+                        id,storyboard_id,shot_id,logical_key,ordinal,revision,role,required,
+                        description,annotation_json,annotated_asset_id,clean_asset_id,selected_asset_id,
+                        send_to_provider,status,metadata_json,created_at,updated_at
+                        ) VALUES(?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (panel.get("id") or uuid4().hex, storyboard_id, shot_id, logical_key, panel_ordinal,
+                         str(panel.get("role") or logical_key), 1 if panel.get("required", True) else 0,
+                         str(panel.get("description") or ""), json.dumps(panel.get("annotation") or {}, ensure_ascii=False),
+                         annotated_asset_id, clean_asset_id, selected_asset_id,
+                         1 if panel.get("send_to_provider") else 0, str(panel.get("status") or "draft"),
+                         json.dumps(panel.get("metadata") or {}, ensure_ascii=False), timestamp, timestamp),
+                    )
             rows = conn.execute(
                 "SELECT * FROM storyboard_shots WHERE storyboard_id=? ORDER BY ordinal", (storyboard_id,),
             ).fetchall()
         return {
             "id": storyboard_id, "task_id": task_id, "version": version, "status": status,
-            "summary": summary, "created_at": timestamp, "shots": [_decode(row) for row in rows],
+            "revision": 1, "summary": summary, "created_at": timestamp, "updated_at": timestamp,
+            "animatic_status": "missing", "shots": [_decode(row) for row in rows],
         }
 
     def list_shots(
@@ -450,6 +541,400 @@ class WorkspaceRepository:
                 (storyboard["id"],),
             ).fetchall()
         return [_decode(row) for row in rows]
+
+    def get_storyboard(self, storyboard_id: str, *, client_id: str) -> dict[str, Any] | None:
+        with self.db.transaction() as conn:
+            board_row = conn.execute(
+                """SELECT s.*,t.client_id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.id=? AND t.client_id=? AND t.deleted_at IS NULL""",
+                (storyboard_id, client_id),
+            ).fetchone()
+            if board_row is None:
+                return None
+            shot_rows = conn.execute(
+                "SELECT * FROM storyboard_shots WHERE storyboard_id=? ORDER BY ordinal,id", (storyboard_id,),
+            ).fetchall()
+            panel_rows = conn.execute(
+                """SELECT p.* FROM storyboard_panels p
+                WHERE p.storyboard_id=? AND p.superseded_at IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM storyboard_panels newer
+                  WHERE newer.shot_id=p.shot_id AND newer.logical_key=p.logical_key
+                  AND newer.revision>p.revision AND newer.superseded_at IS NULL
+                ) ORDER BY p.shot_id,p.ordinal,p.id""",
+                (storyboard_id,),
+            ).fetchall()
+            decision_rows = conn.execute(
+                """SELECT * FROM approval_decisions WHERE storyboard_id=?
+                ORDER BY created_at,id""", (storyboard_id,),
+            ).fetchall()
+            skill_rows = conn.execute(
+                """SELECT id,task_id,storyboard_id,shot_id,skill_id,skill_version,stage,status,
+                blocking,public_label,input_count,output_count,duration_ms,retry_count,blocking_reason,
+                evidence_json,created_at,finished_at FROM skill_runs
+                WHERE task_id=? ORDER BY created_at,id""", (board_row["task_id"],),
+            ).fetchall()
+        board = _decode(board_row)
+        decisions = [_decode(row) for row in decision_rows]
+        latest = {(item["scope"], item["target_id"]): item for item in decisions}
+        panels_by_shot: dict[str, list[dict[str, Any]]] = {}
+        for row in panel_rows:
+            panel = _decode(row)
+            panel["required"] = bool(panel.get("required"))
+            panel["send_to_provider"] = bool(panel.get("send_to_provider"))
+            decision = latest.get(("panel", panel["id"]))
+            panel["approved"] = bool(
+                decision and decision.get("decision") == "approved"
+                and int(decision.get("target_revision") or 0) == int(panel.get("revision") or 1)
+            )
+            panels_by_shot.setdefault(panel["shot_id"], []).append(panel)
+        shots: list[dict[str, Any]] = []
+        for row in shot_rows:
+            shot = _decode(row)
+            shot["panels"] = panels_by_shot.get(shot["id"], [])
+            decision = latest.get(("shot", shot["id"]))
+            shot["approved"] = bool(
+                decision and decision.get("decision") == "approved"
+                and int(decision.get("target_revision") or 0) == int(shot.get("revision") or 1)
+            )
+            shots.append(shot)
+        board_decision = latest.get(("board", storyboard_id))
+        board["board_approved"] = bool(
+            board_decision and board_decision.get("decision") == "approved"
+            and int(board_decision.get("target_revision") or 0) == int(board.get("revision") or 1)
+        )
+        board["shots"] = shots
+        board["approvals"] = decisions
+        board["skill_runs"] = [_decode(row) for row in skill_rows]
+        board["coverage"] = {
+            "shots_total": len(shots),
+            "shots_approved": sum(1 for shot in shots if shot["approved"]),
+            "panels_total": sum(len(shot["panels"]) for shot in shots),
+            "panels_approved": sum(1 for shot in shots for panel in shot["panels"] if panel["approved"]),
+            "clean_frames": sum(1 for shot in shots if any(panel.get("selected_asset_id") for panel in shot["panels"])),
+        }
+        return board
+
+    def list_approvals(self, storyboard_id: str, *, client_id: str) -> list[dict[str, Any]]:
+        if self.get_storyboard(storyboard_id, client_id=client_id) is None:
+            return []
+        with self.db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM approval_decisions WHERE storyboard_id=? AND client_id=? ORDER BY created_at,id",
+                (storyboard_id, client_id),
+            ).fetchall()
+        return [_decode(row) for row in rows]
+
+    def append_workflow_event(
+        self, task_id: str, *, client_id: str, event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.transaction(immediate=True) as conn:
+            task = conn.execute(
+                "SELECT id FROM task_runs WHERE id=? AND client_id=? AND deleted_at IS NULL", (task_id, client_id),
+            ).fetchone()
+            if task is None:
+                raise WorkspaceNotFound("task not found")
+            return _insert_workflow_event(
+                conn, task_id=task_id, client_id=client_id, event_type=event_type, payload=payload,
+            )
+
+    def list_workflow_events(
+        self, task_id: str, *, client_id: str, after_id: int = 0, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if self.get_task(task_id, client_id=client_id) is None:
+            raise WorkspaceNotFound("task not found")
+        with self.db.transaction() as conn:
+            rows = conn.execute(
+                """SELECT * FROM workflow_events WHERE task_id=? AND client_id=? AND id>?
+                ORDER BY id LIMIT ?""", (task_id, client_id, max(0, after_id), min(max(1, limit), 500)),
+            ).fetchall()
+        return [_decode(row) for row in rows]
+
+    def record_skill_run(
+        self, *, task_id: str, skill_id: str, skill_version: str, stage: str,
+        status: str, blocking: bool, public_label: str, input_hash: str, output_hash: str,
+        input_count: int, output_count: int, duration_ms: int, retry_count: int,
+        blocking_reason: str | None, evidence: dict[str, Any], private_trace: dict[str, Any],
+        storyboard_id: str | None = None, shot_id: str | None = None,
+    ) -> dict[str, Any]:
+        run_id = uuid4().hex
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            task = conn.execute("SELECT client_id FROM task_runs WHERE id=?", (task_id,)).fetchone()
+            if task is None:
+                raise WorkspaceNotFound("task not found")
+            conn.execute(
+                """INSERT INTO skill_runs(
+                id,task_id,storyboard_id,shot_id,skill_id,skill_version,stage,status,blocking,
+                public_label,input_hash,output_hash,input_count,output_count,duration_ms,retry_count,
+                blocking_reason,evidence_json,private_trace_json,created_at,finished_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, task_id, storyboard_id, shot_id, skill_id, skill_version, stage, status,
+                 1 if blocking else 0, public_label, input_hash, output_hash, input_count, output_count,
+                 duration_ms, retry_count, blocking_reason, json.dumps(evidence, ensure_ascii=False),
+                 json.dumps(private_trace, ensure_ascii=False), timestamp, timestamp),
+            )
+            _insert_workflow_event(
+                conn, task_id=task_id, client_id=task["client_id"], event_type="skill.completed",
+                payload={"skill_id": skill_id, "version": skill_version, "stage": stage,
+                         "status": status, "label": public_label, "duration_ms": duration_ms,
+                         "input_count": input_count, "output_count": output_count,
+                         "blocking_reason": blocking_reason},
+            )
+            row = conn.execute("SELECT * FROM skill_runs WHERE id=?", (run_id,)).fetchone()
+        return _decode(row)
+
+    def patch_storyboard_shot(
+        self, storyboard_id: str, shot_id: str, *, client_id: str,
+        expected_version: int, values: dict[str, Any],
+    ) -> dict[str, Any]:
+        allowed_columns = {"title", "description", "duration_seconds"}
+        allowed_payload = {
+            "story_function", "visual", "shot_size", "camera_angle", "camera_height", "lens_feel",
+            "composition", "action_start", "action_trigger", "action_result", "camera_move", "sound",
+            "transition", "stable_truth", "may_vary", "reference_manifest", "first_failure_cue",
+        }
+        if set(values) - allowed_columns - allowed_payload:
+            raise ValueError("unsupported storyboard shot fields")
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            board = conn.execute(
+                """SELECT s.*,t.client_id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.id=? AND t.client_id=?""", (storyboard_id, client_id),
+            ).fetchone()
+            if board is None:
+                raise WorkspaceNotFound("storyboard not found")
+            if int(board["revision"]) != expected_version:
+                raise WorkspaceConflict("storyboard version changed")
+            if board["frozen_snapshot_hash"]:
+                raise WorkspaceConflict("approved storyboard is frozen")
+            shot = conn.execute(
+                "SELECT * FROM storyboard_shots WHERE id=? AND storyboard_id=?", (shot_id, storyboard_id),
+            ).fetchone()
+            if shot is None:
+                raise WorkspaceNotFound("shot not found")
+            payload = _loads(shot["payload_json"], {})
+            for key in allowed_payload:
+                if key in values:
+                    payload[key] = values[key]
+            columns = {key: values[key] for key in allowed_columns if key in values}
+            columns["payload_json"] = json.dumps(payload, ensure_ascii=False)
+            assignments = ",".join(f"{key}=?" for key in columns)
+            conn.execute(
+                f"UPDATE storyboard_shots SET {assignments},revision=revision+1 WHERE id=?",
+                (*columns.values(), shot_id),
+            )
+            conn.execute(
+                """UPDATE storyboards SET revision=revision+1,updated_at=?,animatic_status='stale',
+                animatic_confirmed_at=NULL,frozen_snapshot_hash=NULL WHERE id=?""", (timestamp, storyboard_id),
+            )
+            updated = conn.execute("SELECT revision FROM storyboards WHERE id=?", (storyboard_id,)).fetchone()
+            _insert_workflow_event(
+                conn, task_id=board["task_id"], client_id=client_id, event_type="shot.revised",
+                payload={"storyboard_id": storyboard_id, "shot_id": shot_id, "version": updated["revision"]},
+            )
+        result = self.get_storyboard(storyboard_id, client_id=client_id)
+        assert result is not None
+        return result
+
+    def revise_panel(
+        self, panel_id: str, *, client_id: str, expected_version: int,
+        clean_asset_id: str, description: str | None = None,
+    ) -> dict[str, Any]:
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            panel = conn.execute(
+                """SELECT p.*,s.task_id,s.revision board_revision,s.frozen_snapshot_hash,t.client_id
+                FROM storyboard_panels p JOIN storyboards s ON s.id=p.storyboard_id
+                JOIN task_runs t ON t.id=s.task_id WHERE p.id=? AND t.client_id=?""",
+                (panel_id, client_id),
+            ).fetchone()
+            if panel is None:
+                raise WorkspaceNotFound("panel not found")
+            if int(panel["board_revision"]) != expected_version:
+                raise WorkspaceConflict("storyboard version changed")
+            if panel["frozen_snapshot_hash"]:
+                raise WorkspaceConflict("approved storyboard is frozen")
+            asset = conn.execute("SELECT client_id FROM assets WHERE id=?", (clean_asset_id,)).fetchone()
+            if asset is None or asset["client_id"] != client_id:
+                raise WorkspaceConflict("panel asset has a different owner")
+            next_revision = int(panel["revision"]) + 1
+            new_id = uuid4().hex
+            conn.execute("UPDATE storyboard_panels SET superseded_at=?,updated_at=? WHERE id=?", (timestamp, timestamp, panel_id))
+            conn.execute(
+                """INSERT INTO storyboard_panels(
+                id,storyboard_id,shot_id,logical_key,ordinal,revision,role,required,description,
+                annotation_json,annotated_asset_id,clean_asset_id,selected_asset_id,send_to_provider,
+                status,metadata_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,'draft',?,?,?)""",
+                (new_id, panel["storyboard_id"], panel["shot_id"], panel["logical_key"], panel["ordinal"],
+                 next_revision, panel["role"], panel["required"], description or panel["description"],
+                 panel["annotation_json"], panel["annotated_asset_id"], clean_asset_id, clean_asset_id,
+                 panel["metadata_json"], timestamp, timestamp),
+            )
+            conn.execute("UPDATE storyboard_shots SET revision=revision+1,image_asset_id=? WHERE id=?", (clean_asset_id, panel["shot_id"]))
+            conn.execute(
+                """UPDATE storyboards SET revision=revision+1,updated_at=?,animatic_status='stale',
+                animatic_confirmed_at=NULL,frozen_snapshot_hash=NULL WHERE id=?""",
+                (timestamp, panel["storyboard_id"]),
+            )
+            board_revision = int(panel["board_revision"]) + 1
+            _insert_workflow_event(
+                conn, task_id=panel["task_id"], client_id=client_id, event_type="panel.revised",
+                payload={"storyboard_id": panel["storyboard_id"], "shot_id": panel["shot_id"],
+                         "panel_id": new_id, "replaces": panel_id, "version": board_revision},
+            )
+        result = self.get_storyboard(panel["storyboard_id"], client_id=client_id)
+        assert result is not None
+        return result
+
+    def record_approval(
+        self, *, storyboard_id: str, client_id: str, scope: str, target_id: str,
+        decision: str, expected_version: int, feedback: str = "",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        if scope not in {"panel", "shot", "board", "animatic"}:
+            raise ValueError("unsupported approval scope")
+        if decision not in {"approved", "revision_required"}:
+            raise ValueError("unsupported approval decision")
+        decision_id = uuid4().hex
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            board = conn.execute(
+                """SELECT s.*,t.client_id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.id=? AND t.client_id=?""", (storyboard_id, client_id),
+            ).fetchone()
+            if board is None:
+                raise WorkspaceNotFound("storyboard not found")
+            if int(board["revision"]) != expected_version:
+                raise WorkspaceConflict("storyboard version changed")
+            normalized_target = target_id or storyboard_id
+            if scope == "panel":
+                target = conn.execute("SELECT revision FROM storyboard_panels WHERE id=? AND storyboard_id=? AND superseded_at IS NULL", (normalized_target, storyboard_id)).fetchone()
+            elif scope == "shot":
+                target = conn.execute("SELECT revision FROM storyboard_shots WHERE id=? AND storyboard_id=?", (normalized_target, storyboard_id)).fetchone()
+            else:
+                normalized_target = storyboard_id
+                target = {"revision": board["revision"]}
+            if target is None:
+                raise WorkspaceNotFound("approval target not found")
+            if idempotency_key:
+                existing = conn.execute(
+                    "SELECT * FROM approval_decisions WHERE client_id=? AND idempotency_key=?",
+                    (client_id, idempotency_key),
+                ).fetchone()
+                if existing:
+                    return _decode(existing)
+            conn.execute(
+                """INSERT INTO approval_decisions(
+                id,task_id,storyboard_id,client_id,scope,target_id,decision,feedback,
+                expected_version,target_revision,snapshot_hash,idempotency_key,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (decision_id, board["task_id"], storyboard_id, client_id, scope, normalized_target,
+                 decision, feedback, expected_version, int(target["revision"]), None, idempotency_key, timestamp),
+            )
+            _insert_workflow_event(
+                conn, task_id=board["task_id"], client_id=client_id, event_type="approval.recorded",
+                payload={"storyboard_id": storyboard_id, "scope": scope, "target_id": normalized_target,
+                         "decision": decision, "version": expected_version},
+            )
+            row = conn.execute("SELECT * FROM approval_decisions WHERE id=?", (decision_id,)).fetchone()
+        return _decode(row)
+
+    def approve_all(self, storyboard_id: str, *, client_id: str, expected_version: int) -> dict[str, Any]:
+        detail = self.get_storyboard(storyboard_id, client_id=client_id)
+        if detail is None:
+            raise WorkspaceNotFound("storyboard not found")
+        if int(detail["revision"]) != expected_version:
+            raise WorkspaceConflict("storyboard version changed")
+        for shot in detail["shots"]:
+            for panel in shot["panels"]:
+                self.record_approval(storyboard_id=storyboard_id, client_id=client_id, scope="panel",
+                                     target_id=panel["id"], decision="approved", expected_version=expected_version)
+            self.record_approval(storyboard_id=storyboard_id, client_id=client_id, scope="shot",
+                                 target_id=shot["id"], decision="approved", expected_version=expected_version)
+        self.record_approval(storyboard_id=storyboard_id, client_id=client_id, scope="board",
+                             target_id=storyboard_id, decision="approved", expected_version=expected_version)
+        result = self.get_storyboard(storyboard_id, client_id=client_id)
+        assert result is not None
+        return result
+
+    def set_animatic(
+        self, storyboard_id: str, *, client_id: str, expected_version: int,
+        asset_id: str, confirmed: bool = False,
+    ) -> dict[str, Any]:
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            board = conn.execute(
+                """SELECT s.*,t.client_id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.id=? AND t.client_id=?""", (storyboard_id, client_id),
+            ).fetchone()
+            if board is None:
+                raise WorkspaceNotFound("storyboard not found")
+            if int(board["revision"]) != expected_version:
+                raise WorkspaceConflict("storyboard version changed")
+            asset = conn.execute("SELECT client_id FROM assets WHERE id=?", (asset_id,)).fetchone()
+            if asset is None or asset["client_id"] != client_id:
+                raise WorkspaceConflict("animatic asset has a different owner")
+            status = "confirmed" if confirmed else "ready"
+            conn.execute(
+                """UPDATE storyboards SET animatic_asset_id=?,animatic_status=?,animatic_confirmed_at=?,
+                updated_at=? WHERE id=?""", (asset_id, status, timestamp if confirmed else None, timestamp, storyboard_id),
+            )
+            _insert_workflow_event(
+                conn, task_id=board["task_id"], client_id=client_id, event_type="animatic.ready",
+                payload={"storyboard_id": storyboard_id, "asset_id": asset_id, "status": status,
+                         "version": expected_version},
+            )
+        result = self.get_storyboard(storyboard_id, client_id=client_id)
+        assert result is not None
+        return result
+
+    def confirm_animatic(self, storyboard_id: str, *, client_id: str, expected_version: int) -> dict[str, Any]:
+        detail = self.get_storyboard(storyboard_id, client_id=client_id)
+        if detail is None or not detail.get("animatic_asset_id"):
+            raise WorkspaceConflict("animatic is not ready")
+        self.record_approval(storyboard_id=storyboard_id, client_id=client_id, scope="animatic",
+                             target_id=storyboard_id, decision="approved", expected_version=expected_version)
+        return self.set_animatic(storyboard_id, client_id=client_id, expected_version=expected_version,
+                                 asset_id=detail["animatic_asset_id"], confirmed=True)
+
+    def freeze_storyboard(self, storyboard_id: str, *, client_id: str, expected_version: int) -> dict[str, Any]:
+        detail = self.get_storyboard(storyboard_id, client_id=client_id)
+        if detail is None:
+            raise WorkspaceNotFound("storyboard not found")
+        if int(detail["revision"]) != expected_version:
+            raise WorkspaceConflict("storyboard version changed")
+        if detail.get("frozen_snapshot_hash"):
+            return detail
+        snapshot = {
+            "storyboard_id": storyboard_id, "revision": detail["revision"],
+            "animatic_asset_id": detail.get("animatic_asset_id"),
+            "shots": [{
+                "id": shot["id"], "revision": shot["revision"], "duration_seconds": shot["duration_seconds"],
+                "payload": shot.get("payload"),
+                "panels": [{"id": panel["id"], "revision": panel["revision"],
+                            "selected_asset_id": panel.get("selected_asset_id"),
+                            "send_to_provider": panel.get("send_to_provider")} for panel in shot["panels"]],
+            } for shot in detail["shots"]],
+        }
+        digest = _snapshot_hash(snapshot)
+        with self.db.transaction(immediate=True) as conn:
+            cursor = conn.execute(
+                """UPDATE storyboards SET frozen_snapshot_hash=?,status='confirmed',updated_at=?
+                WHERE id=? AND revision=? AND frozen_snapshot_hash IS NULL""",
+                (digest, _now(), storyboard_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise WorkspaceConflict("storyboard version changed")
+            task_id = conn.execute("SELECT task_id FROM storyboards WHERE id=?", (storyboard_id,)).fetchone()["task_id"]
+            _insert_workflow_event(conn, task_id=task_id, client_id=client_id, event_type="storyboard.frozen",
+                                   payload={"storyboard_id": storyboard_id, "version": expected_version,
+                                            "snapshot_hash": digest})
+        result = self.get_storyboard(storyboard_id, client_id=client_id)
+        assert result is not None
+        return result
 
     @staticmethod
     def _quota_snapshot_conn(

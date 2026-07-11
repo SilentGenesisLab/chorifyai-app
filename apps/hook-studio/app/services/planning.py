@@ -17,6 +17,21 @@ class ShotPlan:
     camera: str
     sound: str
     prompt: str
+    story_function: str = ""
+    shot_size: str = "近景"
+    camera_angle: str = "平视"
+    camera_height: str = "主体中心高度"
+    lens_feel: str = "35mm真实摄影感"
+    composition: str = "主体位于9:16安全区中央"
+    action_start: str = ""
+    action_trigger: str = ""
+    action_result: str = ""
+    camera_move: str = ""
+    transition: str = "按动作完成点切镜"
+    stable_truth: tuple[str, ...] = ("产品结构", "主体身份", "空间方向")
+    may_vary: tuple[str, ...] = ("手部微动作", "环境细节")
+    reference_manifest: tuple[dict[str, Any], ...] = ()
+    first_failure_cue: str = "主体结构、动作因果或空间方向首先发生漂移"
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -65,7 +80,24 @@ def normalize_plan(raw: Any, *, brief: str, durations: list[int], tool: str) -> 
         camera = str(item.get("camera") or "9:16真实手持近景，单一连续运镜")
         sound = str(item.get("sound") or "保留与动作同步的环境音和动作音")
         prompt = str(item.get("prompt") or f"{camera}。{visual}。触发后，{action}。{sound}。无字幕、无水印、无竞品标识。")
-        plans.append(ShotPlan(index + 1, duration, title, purpose, visual, action, camera, sound, prompt))
+        plans.append(ShotPlan(
+            index + 1, duration, title, purpose, visual, action, camera, sound, prompt,
+            story_function=str(item.get("story_function") or purpose),
+            shot_size=str(item.get("shot_size") or "近景"),
+            camera_angle=str(item.get("camera_angle") or "平视"),
+            camera_height=str(item.get("camera_height") or "主体中心高度"),
+            lens_feel=str(item.get("lens_feel") or "35mm真实摄影感"),
+            composition=str(item.get("composition") or "主体位于9:16安全区中央，前中后景关系清楚"),
+            action_start=str(item.get("action_start") or f"动作开始前，{visual}"),
+            action_trigger=str(item.get("action_trigger") or action),
+            action_result=str(item.get("action_result") or "动作完成，结果清楚且可验证"),
+            camera_move=str(item.get("camera_move") or camera),
+            transition=str(item.get("transition") or "按动作完成点切镜"),
+            stable_truth=tuple(item.get("stable_truth") or ("产品结构", "主体身份", "空间方向")),
+            may_vary=tuple(item.get("may_vary") or ("手部微动作", "环境细节")),
+            reference_manifest=tuple(item.get("reference_manifest") or ()),
+            first_failure_cue=str(item.get("first_failure_cue") or "主体结构、动作因果或空间方向首先发生漂移"),
+        ))
     return plans
 
 
@@ -76,6 +108,5 @@ def planning_prompt(*, brief: str, tool: str, durations: list[int], context: str
 总镜头数：{len(durations)}
 每镜头时长：{durations}
 素材解析摘要：{context[:6000]}
-输出结构：{{"title":"项目标题","summary":"生产策略","shots":[{{"title":"镜头标题","purpose":"镜头功能","visual":"可见画面","action":"触发->动作->结果","camera":"景别和单一运镜","sound":"声音意图","prompt":"可直接用于Seedance的中文提示词"}}]}}
-硬约束：shots数量必须等于{len(durations)}；每镜头只做一个主要动作；9:16；产品、人物、场景和动作因果可拍；不得复制参考视频的原人物、品牌、字幕、音乐或受保护表达。"""
-
+   输出结构：{{"title":"项目标题","summary":"生产策略","shots":[{{"title":"镜头标题","story_function":"本镜叙事功能","visual":"完整可见画面","shot_size":"景别","camera_angle":"机位角度","camera_height":"机位高度","lens_feel":"镜头质感","composition":"前中后景构图","action_start":"动作起点","action_trigger":"触发与动作变化","action_result":"动作结果","camera_move":"单一运镜","sound":"声音意图","transition":"转场点","stable_truth":["必须稳定的事实"],"may_vary":["允许变化"],"first_failure_cue":"最先失败征兆","prompt":"服务端生成提示词"}}]}}
+   硬约束：shots数量必须等于{len(durations)}；每镜头只做一个主要动作；动作起点、变化和结果都必须可见；描述人物、产品、场景、光线、构图、景别、机位、运镜、声音和转场；9:16；不得复制参考视频的原人物、品牌、字幕、音乐或受保护表达。"""
