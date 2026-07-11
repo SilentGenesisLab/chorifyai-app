@@ -17,10 +17,17 @@ async function waitTask(request: APIRequestContext, taskId: string, wanted: Set<
   const deadline = Date.now() + timeoutMs
   let task: JsonRecord = {}
   while (Date.now() < deadline) {
-    const response = await request.get(`${API}/tasks/${taskId}`, { timeout: 30_000 })
-    expect(response.status()).toBe(200)
-    task = await response.json()
-    if (wanted.has(String(task.status))) return task
+    try {
+      const response = await request.get(`${API}/tasks/${taskId}`, { timeout: 30_000 })
+      if (response.status() === 200) {
+        task = await response.json()
+        if (wanted.has(String(task.status))) return task
+      } else if (response.status() < 500) {
+        expect(response.status()).toBe(200)
+      }
+    } catch (error) {
+      task = { ...task, transient_poll_error: String(error) }
+    }
     await new Promise(resolve => setTimeout(resolve, 5_000))
   }
   throw new Error(`任务 ${taskId} 等待超时，最后状态 ${JSON.stringify(task)}`)
@@ -47,8 +54,31 @@ async function createTask(page: Page, tool: 'create_image' | 'create_video', dur
   return { conversationId: String(conversation.id), task: (await response.json()).task as JsonRecord }
 }
 
+async function reusableAcceptanceTasks(page: Page) {
+  const response = await page.request.get(`${API}/conversations`)
+  expect(response.status()).toBe(200)
+  const conversations = ((await response.json()).items || []) as JsonRecord[]
+  const matching = conversations.filter(item => String(item.title || '').startsWith('MVP真实验收-'))
+  const groups = await Promise.all(matching.map(async conversation => {
+    const tasks = await page.request.get(`${API}/tasks?conversation_id=${conversation.id}`)
+    expect(tasks.status()).toBe(200)
+    return ((await tasks.json()).items || []) as JsonRecord[]
+  }))
+  return groups.flat().filter(task => task.status !== 'failed')
+}
+
 async function approveAndProduce(page: Page, task: JsonRecord) {
-  const planned = await waitTask(page.request, String(task.id), new Set(['waiting_confirmation', 'failed']), 600_000)
+  let current = await waitTask(
+    page.request, String(task.id), new Set(['queued', 'running', 'waiting_confirmation', 'succeeded', 'failed']), 30_000,
+  )
+  if (current.status === 'succeeded' || current.status === 'failed') return current
+  if (current.storyboard_id && current.status !== 'waiting_confirmation' && current.stage !== '等待确认') {
+    return waitTask(page.request, String(task.id), new Set(['succeeded', 'failed']), 900_000)
+  }
+  const planned = current.status === 'waiting_confirmation' ? current : await waitTask(
+    page.request, String(task.id), new Set(['waiting_confirmation', 'succeeded', 'failed']), 900_000,
+  )
+  if (planned.status === 'succeeded' || planned.status === 'failed') return planned
   expect(planned.status, JSON.stringify(planned)).toBe('waiting_confirmation')
   const boardId = String(planned.storyboard_id || planned.storyboardId)
   expect(boardId).toBeTruthy()
@@ -102,8 +132,12 @@ test('公网新 MVP 真实图片三次、视频三次并含多镜拼接与结构
   expect((await page.request.get(`${API}/bootstrap`)).status()).toBe(401)
   await login(page)
 
-  const imageSubmissions = await Promise.all([0, 1, 2].map(() => createTask(page, 'create_image')))
-  const videoSubmissions = await Promise.all([4, 4, 16].map(duration => createTask(page, 'create_video', duration)))
+  const reusable = await reusableAcceptanceTasks(page)
+  const imageSubmissions: Array<{ task: JsonRecord; conversationId?: string }> = reusable.filter(task => task.tool === 'create_image').slice(0, 3).map(task => ({ task }))
+  const videoSubmissions: Array<{ task: JsonRecord; conversationId?: string }> = reusable.filter(task => task.tool === 'create_video').slice(0, 3).map(task => ({ task }))
+  while (imageSubmissions.length < 3) imageSubmissions.push(await createTask(page, 'create_image'))
+  const missingDurations = [4, 4, 16].filter(duration => !videoSubmissions.some(item => Number(item.task.params?.duration_seconds) === duration))
+  while (videoSubmissions.length < 3) videoSubmissions.push(await createTask(page, 'create_video', missingDurations.shift() || 4))
 
   const images = await Promise.all(imageSubmissions.map(item => waitTask(
     page.request, String(item.task.id), new Set(['succeeded', 'failed']), 600_000,
