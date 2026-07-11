@@ -49,6 +49,11 @@ STAGE_MAP = {
     "completed": "技术质检",
     "failed": "技术质检",
 }
+PUBLIC_INTERNAL_FIELDS = {
+    "apikey", "endpoint", "model", "modelid", "modelname", "private",
+    "privatetrace", "prompt", "promptfinal", "provider", "providerid",
+    "providername", "providertrace", "raw", "secret", "token", "trace",
+}
 
 
 def _principal(request: Request) -> Any:
@@ -64,6 +69,20 @@ def _repo(request: Request) -> WorkspaceRepository:
 
 def _value(principal: Any, name: str, default: Any = None) -> Any:
     return principal.get(name, default) if isinstance(principal, dict) else getattr(principal, name, default)
+
+
+def _public_projection(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_public_projection(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    projected: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized in PUBLIC_INTERNAL_FIELDS or "provider" in normalized or normalized.startswith("model"):
+            continue
+        projected[key] = _public_projection(item)
+    return projected
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -196,7 +215,7 @@ def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estima
         "clean_ready": coverage.get("clean_frames", 0),
         "approved_shots": coverage.get("shots_approved", 0),
     }
-    return {
+    return _public_projection({
         "id": board["id"], "version": f"v{board.get('version', 1)}",
         "task_id": board.get("task_id"),
         "revision": int(board.get("revision") or 1),
@@ -214,7 +233,7 @@ def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estima
         "guard": {"can_produce": can_produce, "blockers": blockers},
         "frozen": bool(board.get("frozen_snapshot_hash")),
         "updated_at": board.get("updated_at") or board.get("created_at"),
-    }
+    })
 
 
 def _message_payload(repo: WorkspaceRepository, message: dict[str, Any]) -> dict[str, Any]:
@@ -422,6 +441,10 @@ class PanelRegenerateInput(BaseModel):
     feedback: str = Field(default="", max_length=4000)
 
 
+class CandidateSelectInput(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
 class ScopedDecisionInput(BaseModel):
     expected_version: int = Field(ge=1)
     scope: str
@@ -516,6 +539,7 @@ async def send_message(
     text: str = Form(default=""), tool: str = Form(default="create_video"),
     duration_seconds: int | None = Form(default=None), links: str = Form(default="[]"),
     attachments: list[UploadFile] = File(default=[]),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     principal = _principal(request); client_id = str(_value(principal, "code_id")); repo = _repo(request)
     if tool not in TOOL_MAP:
@@ -526,6 +550,19 @@ async def send_message(
             raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "请先确认视频总时长（4-60秒）"})
         if duration_seconds < 4 or duration_seconds > 60:
             raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "视频总时长必须为4-60秒"})
+    normalized_key = (idempotency_key or "").strip()
+    if normalized_key and (len(normalized_key) < 8 or len(normalized_key) > 160 or not re.fullmatch(r"[A-Za-z0-9._:-]+", normalized_key)):
+        raise HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": "提交标识格式无效"})
+    if normalized_key:
+        replay = repo.get_idempotent_submission(
+            client_id=client_id, conversation_id=conversation_id, idempotency_key=normalized_key,
+        )
+        if replay:
+            return {
+                "message": _message_payload(repo, replay["message"]),
+                "task": _task_payload(replay["task"]),
+                "replayed": True,
+            }
     try:
         parsed_links = json.loads(links or "[]")
         if not isinstance(parsed_links, list) or len(parsed_links) > 10:
@@ -565,8 +602,23 @@ async def send_message(
             client_id=client_id, conversation_id=conversation_id, kind=kind, title=title,
             request_message_id=message["id"], params=params,
         )
+        if normalized_key:
+            recorded = repo.record_idempotent_submission(
+                client_id=client_id, conversation_id=conversation_id,
+                idempotency_key=normalized_key, message_id=message["id"], task_id=task["id"],
+            )
+            if recorded.get("task_id") != task["id"]:
+                replay = repo.get_idempotent_submission(
+                    client_id=client_id, conversation_id=conversation_id, idempotency_key=normalized_key,
+                )
+                if replay:
+                    return {
+                        "message": _message_payload(repo, replay["message"]),
+                        "task": _task_payload(replay["task"]),
+                        "replayed": True,
+                    }
         await request.app.state.production.enqueue(task["id"])
-        return {"message": _message_payload(repo, message), "task": _task_payload(task, 1)}
+        return {"message": _message_payload(repo, message), "task": _task_payload(task, 1), "replayed": False}
     except HTTPException:
         raise
     except Exception as exc:
@@ -620,6 +672,21 @@ async def patch_storyboard_shot(
         raise _http_error(exc) from exc
 
 
+@router.post("/storyboards/{storyboard_id}/shots/{shot_id}/regenerate")
+async def regenerate_storyboard_shot(
+    storyboard_id: str, shot_id: str, payload: PanelRegenerateInput, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        board = await request.app.state.production.regenerate_shot(
+            storyboard_id, shot_id, client_id=client_id,
+            expected_version=payload.expected_version, feedback=payload.feedback,
+        )
+        return _storyboard_payload(_repo(request), board)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
 @router.post("/storyboards/{storyboard_id}/panels/{panel_id}/regenerate")
 async def regenerate_storyboard_panel(
     storyboard_id: str, panel_id: str, payload: PanelRegenerateInput, request: Request,
@@ -629,6 +696,57 @@ async def regenerate_storyboard_panel(
         board = await request.app.state.production.regenerate_panel(
             storyboard_id, panel_id, client_id=client_id,
             expected_version=payload.expected_version, feedback=payload.feedback,
+        )
+        return _storyboard_payload(_repo(request), board)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/storyboards/{storyboard_id}/panels/{panel_id}/candidates")
+async def storyboard_panel_candidates(
+    storyboard_id: str, panel_id: str, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        history = _repo(request).list_panel_candidates(
+            storyboard_id, panel_id, client_id=client_id,
+        )
+        candidates = []
+        for candidate in history["candidates"]:
+            selected = _repo(request).get_asset(
+                str(candidate.get("selected_asset_id") or ""), client_id=client_id,
+            )
+            annotated = _repo(request).get_asset(
+                str(candidate.get("annotated_asset_id") or ""), client_id=client_id,
+            )
+            candidates.append({
+                "id": candidate["id"], "revision": int(candidate.get("revision") or 1),
+                "logical_key": candidate.get("logical_key"), "order": candidate.get("ordinal"),
+                "role": "end" if candidate.get("role") == "result" else candidate.get("role"),
+                "description": candidate.get("description") or "",
+                "clean_asset_id": candidate.get("clean_asset_id"),
+                "selected_asset_id": candidate.get("selected_asset_id"),
+                "clean_url": (selected or {}).get("storage_uri") or "",
+                "annotated_url": (annotated or {}).get("storage_uri") or "",
+                "send_to_provider": bool(candidate.get("send_to_provider")),
+                "is_current": bool(candidate.get("is_current")),
+                "created_at": candidate.get("created_at"),
+            })
+        return {**{key: value for key, value in history.items() if key != "candidates"}, "candidates": candidates}
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/storyboards/{storyboard_id}/panels/{panel_id}/candidates/{candidate_id}/select")
+async def select_storyboard_panel_candidate(
+    storyboard_id: str, panel_id: str, candidate_id: str,
+    payload: CandidateSelectInput, request: Request,
+) -> dict[str, Any]:
+    client_id = str(_value(_principal(request), "code_id"))
+    try:
+        board = _repo(request).select_panel_candidate(
+            storyboard_id, panel_id, candidate_id, client_id=client_id,
+            expected_version=payload.expected_version,
         )
         return _storyboard_payload(_repo(request), board)
     except Exception as exc:

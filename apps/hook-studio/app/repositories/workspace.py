@@ -26,6 +26,7 @@ JSON_FIELDS = {
     "private_trace_json": "private_trace",
     "envelope_json": "envelope",
 }
+REQUIRED_PANEL_ROLES = frozenset({"start", "action", "result"})
 
 
 class WorkspaceError(RuntimeError):
@@ -87,6 +88,39 @@ def _decode(row: Any) -> dict[str, Any]:
 def _snapshot_hash(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _required_storyboard_panels(shot: dict[str, Any], index: int) -> list[dict[str, Any]]:
+    label = f"storyboard shot {shot.get('ordinal') or index}"
+    raw_panels = shot.get("panels")
+    if not isinstance(raw_panels, list) or len(raw_panels) < 3:
+        raise ValueError(f"{label} requires at least three panels")
+    if not all(isinstance(panel, dict) for panel in raw_panels):
+        raise ValueError(f"{label} panels must be objects")
+    required = [panel for panel in raw_panels if panel.get("required", True)]
+    roles = {str(panel.get("role") or "") for panel in required}
+    if not REQUIRED_PANEL_ROLES.issubset(roles):
+        raise ValueError(f"{label} requires start, action and result panels")
+    ordinals: set[int] = set()
+    logical_keys: set[str] = set()
+    for panel_index, panel in enumerate(raw_panels, start=1):
+        ordinal = int(panel.get("ordinal") or panel_index)
+        logical_key = str(panel.get("logical_key") or panel.get("role") or f"panel-{ordinal}")
+        if ordinal in ordinals or logical_key in logical_keys:
+            raise ValueError(f"{label} panel ordinals and logical keys must be unique")
+        ordinals.add(ordinal)
+        logical_keys.add(logical_key)
+        if panel not in required:
+            continue
+        if not str(panel.get("description") or "").strip():
+            raise ValueError(f"{label} required panels need descriptions")
+        if not panel.get("clean_asset_id") or not panel.get("selected_asset_id"):
+            raise ValueError(f"{label} required panels need selected clean frames")
+        if not panel.get("send_to_provider"):
+            raise ValueError(f"{label} required clean frames must be sendable")
+        if panel.get("annotated_asset_id") == panel.get("selected_asset_id"):
+            raise ValueError(f"{label} annotated panels cannot be selected clean frames")
+    return raw_panels
 
 
 def _insert_workflow_event(
@@ -275,6 +309,17 @@ class WorkspaceRepository:
             row = conn.execute(sql, params).fetchone()
         return _decode(row) if row else None
 
+    def get_asset_by_storage_uri(
+        self, storage_uri: str, *, client_id: str,
+    ) -> dict[str, Any] | None:
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                """SELECT * FROM assets WHERE storage_uri=? AND client_id=?
+                AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1""",
+                (storage_uri, client_id),
+            ).fetchone()
+        return _decode(row) if row else None
+
     def bind_asset(
         self, message_id: str, asset_id: str, *, usage: str = "input",
         ordinal: int | None = None, caption: str | None = None,
@@ -439,6 +484,10 @@ class WorkspaceRepository:
     ) -> dict[str, Any]:
         if not shots:
             raise ValueError("storyboard requires at least one shot")
+        for index, shot in enumerate(shots, start=1):
+            if not isinstance(shot, dict):
+                raise ValueError("storyboard shots must be objects")
+            _required_storyboard_panels(shot, index)
         storyboard_id = storyboard_id or uuid4().hex
         timestamp = _now(now)
         with self.db.transaction(immediate=True) as conn:
@@ -460,7 +509,7 @@ class WorkspaceRepository:
                 if ordinal in seen:
                     raise WorkspaceConflict("storyboard shot ordinals must be unique")
                 seen.add(ordinal)
-                panel_values = list(shot.get("panels") or [])
+                panel_values = _required_storyboard_panels(shot, index)
                 image_asset_id = shot.get("image_asset_id") or next(
                     (panel.get("selected_asset_id") or panel.get("clean_asset_id") for panel in panel_values
                      if panel.get("selected_asset_id") or panel.get("clean_asset_id")), None,
@@ -489,9 +538,21 @@ class WorkspaceRepository:
                     for candidate_id in (clean_asset_id, selected_asset_id, annotated_asset_id):
                         if not candidate_id:
                             continue
-                        candidate = conn.execute("SELECT client_id FROM assets WHERE id=?", (candidate_id,)).fetchone()
+                        candidate = conn.execute(
+                            """SELECT client_id,source_type,media_type,status,storage_uri,deleted_at
+                            FROM assets WHERE id=?""", (candidate_id,),
+                        ).fetchone()
                         if candidate is None or candidate["client_id"] != task["client_id"]:
                             raise WorkspaceConflict("storyboard panel asset has a different owner")
+                        if candidate["deleted_at"] is not None:
+                            raise WorkspaceConflict("storyboard panel asset has been deleted")
+                        if candidate_id in {clean_asset_id, selected_asset_id} and (
+                            candidate["source_type"] != "storyboard_clean"
+                            or candidate["media_type"] != "image"
+                            or candidate["status"] != "ready"
+                            or not candidate["storage_uri"]
+                        ):
+                            raise WorkspaceConflict("storyboard clean frame is not ready")
                     conn.execute(
                         """INSERT INTO storyboard_panels(
                         id,storyboard_id,shot_id,logical_key,ordinal,revision,role,required,
@@ -651,6 +712,50 @@ class WorkspaceRepository:
             ).fetchall()
         return [_decode(row) for row in rows]
 
+    def get_idempotent_submission(
+        self, *, client_id: str, conversation_id: str, idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        dedupe_key = f"message.submit:{client_id}:{idempotency_key}"
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                """SELECT payload_json FROM activity_events
+                WHERE client_id=? AND conversation_id=? AND dedupe_key=?""",
+                (client_id, conversation_id, dedupe_key),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = _loads(row["payload_json"], {})
+            message_row = conn.execute(
+                """SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                WHERE m.id=? AND c.client_id=? AND c.id=?""",
+                (str(payload.get("message_id") or ""), client_id, conversation_id),
+            ).fetchone()
+        message = _decode(message_row) if message_row is not None else None
+        task = self.get_task(str(payload.get("task_id") or ""), client_id=client_id)
+        if message is None or task is None:
+            return None
+        return {"message": message, "task": task}
+
+    def record_idempotent_submission(
+        self, *, client_id: str, conversation_id: str, idempotency_key: str,
+        message_id: str, task_id: str,
+    ) -> dict[str, Any]:
+        dedupe_key = f"message.submit:{client_id}:{idempotency_key}"
+        timestamp = _now()
+        payload = {"message_id": message_id, "task_id": task_id}
+        with self.db.transaction(immediate=True) as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO activity_events(
+                ts,client_id,event_type,conversation_id,message_id,task_id,dedupe_key,payload_json
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (timestamp, client_id, "message.submitted", conversation_id, message_id, task_id,
+                 dedupe_key, json.dumps(payload, ensure_ascii=False)),
+            )
+            row = conn.execute(
+                "SELECT payload_json FROM activity_events WHERE dedupe_key=?", (dedupe_key,),
+            ).fetchone()
+        return _loads(row["payload_json"], payload) if row is not None else payload
+
     def record_skill_run(
         self, *, task_id: str, skill_id: str, skill_version: str, stage: str,
         status: str, blocking: bool, public_label: str, input_hash: str, output_hash: str,
@@ -786,6 +891,245 @@ class WorkspaceRepository:
                          "panel_id": new_id, "replaces": panel_id, "version": board_revision},
             )
         result = self.get_storyboard(panel["storyboard_id"], client_id=client_id)
+        assert result is not None
+        return result
+
+    def list_panel_candidates(
+        self, storyboard_id: str, panel_id: str, *, client_id: str,
+    ) -> dict[str, Any]:
+        with self.db.transaction() as conn:
+            current = conn.execute(
+                """SELECT p.*,s.revision board_revision FROM storyboard_panels p
+                JOIN storyboards s ON s.id=p.storyboard_id
+                JOIN task_runs t ON t.id=s.task_id
+                WHERE p.id=? AND p.storyboard_id=? AND p.superseded_at IS NULL
+                AND t.client_id=? AND t.deleted_at IS NULL""",
+                (panel_id, storyboard_id, client_id),
+            ).fetchone()
+            if current is None:
+                raise WorkspaceNotFound("panel not found")
+            rows = conn.execute(
+                """SELECT * FROM storyboard_panels
+                WHERE storyboard_id=? AND shot_id=? AND logical_key=?
+                ORDER BY revision DESC,id""",
+                (storyboard_id, current["shot_id"], current["logical_key"]),
+            ).fetchall()
+        candidates = []
+        for row in rows:
+            candidate = _decode(row)
+            candidate["required"] = bool(candidate.get("required"))
+            candidate["send_to_provider"] = bool(candidate.get("send_to_provider"))
+            candidate["is_current"] = candidate["id"] == panel_id
+            candidates.append(candidate)
+        return {
+            "storyboard_id": storyboard_id,
+            "shot_id": current["shot_id"],
+            "logical_key": current["logical_key"],
+            "current_panel_id": panel_id,
+            "revision": int(current["board_revision"]),
+            "candidates": candidates,
+        }
+
+    def select_panel_candidate(
+        self, storyboard_id: str, panel_id: str, candidate_id: str, *,
+        client_id: str, expected_version: int,
+    ) -> dict[str, Any]:
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            current = conn.execute(
+                """SELECT p.*,s.task_id,s.revision board_revision,s.frozen_snapshot_hash
+                FROM storyboard_panels p JOIN storyboards s ON s.id=p.storyboard_id
+                JOIN task_runs t ON t.id=s.task_id
+                WHERE p.id=? AND p.storyboard_id=? AND p.superseded_at IS NULL
+                AND t.client_id=? AND t.deleted_at IS NULL""",
+                (panel_id, storyboard_id, client_id),
+            ).fetchone()
+            if current is None:
+                raise WorkspaceNotFound("panel not found")
+            if int(current["board_revision"]) != expected_version:
+                raise WorkspaceConflict("storyboard version changed")
+            if current["frozen_snapshot_hash"]:
+                raise WorkspaceConflict("approved storyboard is frozen")
+            candidate = conn.execute(
+                """SELECT p.* FROM storyboard_panels p
+                JOIN storyboards s ON s.id=p.storyboard_id
+                JOIN task_runs t ON t.id=s.task_id
+                WHERE p.id=? AND t.client_id=? AND t.deleted_at IS NULL""",
+                (candidate_id, client_id),
+            ).fetchone()
+            if candidate is None:
+                raise WorkspaceNotFound("candidate not found")
+            if (
+                candidate["storyboard_id"] != storyboard_id
+                or candidate["shot_id"] != current["shot_id"]
+                or candidate["logical_key"] != current["logical_key"]
+            ):
+                raise WorkspaceConflict("candidate belongs to a different logical panel")
+            for asset_id in (
+                candidate["annotated_asset_id"], candidate["clean_asset_id"], candidate["selected_asset_id"],
+            ):
+                if not asset_id:
+                    continue
+                asset = conn.execute(
+                    "SELECT id FROM assets WHERE id=? AND client_id=? AND deleted_at IS NULL",
+                    (asset_id, client_id),
+                ).fetchone()
+                if asset is None:
+                    raise WorkspaceConflict("candidate asset is unavailable")
+            next_revision = int(conn.execute(
+                """SELECT COALESCE(MAX(revision),0)+1 next_revision FROM storyboard_panels
+                WHERE shot_id=? AND logical_key=?""",
+                (current["shot_id"], current["logical_key"]),
+            ).fetchone()["next_revision"])
+            new_id = uuid4().hex
+            metadata = _loads(candidate["metadata_json"], {})
+            metadata["selected_from_panel_id"] = candidate_id
+            conn.execute(
+                "UPDATE storyboard_panels SET superseded_at=?,updated_at=? WHERE id=?",
+                (timestamp, timestamp, panel_id),
+            )
+            conn.execute(
+                """INSERT INTO storyboard_panels(
+                id,storyboard_id,shot_id,logical_key,ordinal,revision,role,required,description,
+                annotation_json,annotated_asset_id,clean_asset_id,selected_asset_id,send_to_provider,
+                status,metadata_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?,?)""",
+                (
+                    new_id, storyboard_id, current["shot_id"], current["logical_key"], current["ordinal"],
+                    next_revision, current["role"], current["required"], candidate["description"],
+                    candidate["annotation_json"], candidate["annotated_asset_id"], candidate["clean_asset_id"],
+                    candidate["selected_asset_id"], candidate["send_to_provider"],
+                    json.dumps(metadata, ensure_ascii=False), timestamp, timestamp,
+                ),
+            )
+            preview = conn.execute(
+                """SELECT COALESCE(selected_asset_id,clean_asset_id) asset_id
+                FROM storyboard_panels WHERE shot_id=? AND superseded_at IS NULL
+                ORDER BY ordinal,id LIMIT 1""",
+                (current["shot_id"],),
+            ).fetchone()
+            conn.execute(
+                "UPDATE storyboard_shots SET revision=revision+1,image_asset_id=? WHERE id=?",
+                (preview["asset_id"] if preview else None, current["shot_id"]),
+            )
+            conn.execute(
+                """UPDATE storyboards SET revision=revision+1,updated_at=?,animatic_status='stale',
+                animatic_confirmed_at=NULL,frozen_snapshot_hash=NULL WHERE id=?""",
+                (timestamp, storyboard_id),
+            )
+            board_revision = int(current["board_revision"]) + 1
+            _insert_workflow_event(
+                conn, task_id=current["task_id"], client_id=client_id,
+                event_type="panel.candidate_selected",
+                payload={
+                    "storyboard_id": storyboard_id, "shot_id": current["shot_id"],
+                    "panel_id": new_id, "candidate_id": candidate_id,
+                    "replaces": panel_id, "version": board_revision,
+                },
+            )
+        result = self.get_storyboard(storyboard_id, client_id=client_id)
+        assert result is not None
+        return result
+
+    def revise_shot_panels(
+        self, storyboard_id: str, shot_id: str, *, client_id: str,
+        expected_version: int, replacements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not replacements:
+            raise ValueError("whole-shot revision requires replacement panels")
+        replacement_by_id = {
+            str(item.get("panel_id") or ""): item for item in replacements if item.get("panel_id")
+        }
+        if len(replacement_by_id) != len(replacements):
+            raise ValueError("replacement panel ids must be unique")
+        timestamp = _now()
+        with self.db.transaction(immediate=True) as conn:
+            board = conn.execute(
+                """SELECT s.*,t.client_id FROM storyboards s JOIN task_runs t ON t.id=s.task_id
+                WHERE s.id=? AND t.client_id=? AND t.deleted_at IS NULL""",
+                (storyboard_id, client_id),
+            ).fetchone()
+            if board is None:
+                raise WorkspaceNotFound("storyboard not found")
+            if int(board["revision"]) != expected_version:
+                raise WorkspaceConflict("storyboard version changed")
+            if board["frozen_snapshot_hash"]:
+                raise WorkspaceConflict("approved storyboard is frozen")
+            shot = conn.execute(
+                "SELECT * FROM storyboard_shots WHERE id=? AND storyboard_id=?",
+                (shot_id, storyboard_id),
+            ).fetchone()
+            if shot is None:
+                raise WorkspaceNotFound("shot not found")
+            panels = conn.execute(
+                """SELECT * FROM storyboard_panels
+                WHERE storyboard_id=? AND shot_id=? AND superseded_at IS NULL
+                ORDER BY ordinal,id""",
+                (storyboard_id, shot_id),
+            ).fetchall()
+            if not panels or {panel["id"] for panel in panels} != set(replacement_by_id):
+                raise WorkspaceConflict("whole-shot revision must replace every current panel")
+            created: list[dict[str, Any]] = []
+            for panel in panels:
+                replacement = replacement_by_id[panel["id"]]
+                clean_asset_id = str(replacement.get("clean_asset_id") or "")
+                asset = conn.execute(
+                    "SELECT id FROM assets WHERE id=? AND client_id=? AND deleted_at IS NULL",
+                    (clean_asset_id, client_id),
+                ).fetchone()
+                if asset is None:
+                    raise WorkspaceConflict("replacement panel asset is unavailable")
+                next_revision = int(conn.execute(
+                    """SELECT COALESCE(MAX(revision),0)+1 next_revision FROM storyboard_panels
+                    WHERE shot_id=? AND logical_key=?""",
+                    (shot_id, panel["logical_key"]),
+                ).fetchone()["next_revision"])
+                new_id = uuid4().hex
+                metadata = _loads(panel["metadata_json"], {})
+                metadata["regenerated_from_panel_id"] = panel["id"]
+                conn.execute(
+                    "UPDATE storyboard_panels SET superseded_at=?,updated_at=? WHERE id=?",
+                    (timestamp, timestamp, panel["id"]),
+                )
+                conn.execute(
+                    """INSERT INTO storyboard_panels(
+                    id,storyboard_id,shot_id,logical_key,ordinal,revision,role,required,description,
+                    annotation_json,annotated_asset_id,clean_asset_id,selected_asset_id,send_to_provider,
+                    status,metadata_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?,?)""",
+                    (
+                        new_id, storyboard_id, shot_id, panel["logical_key"], panel["ordinal"],
+                        next_revision, panel["role"], panel["required"],
+                        str(replacement.get("description") or panel["description"]),
+                        panel["annotation_json"], panel["annotated_asset_id"], clean_asset_id,
+                        clean_asset_id, panel["send_to_provider"],
+                        json.dumps(metadata, ensure_ascii=False), timestamp, timestamp,
+                    ),
+                )
+                created.append({
+                    "panel_id": new_id, "replaces": panel["id"],
+                    "logical_key": panel["logical_key"], "revision": next_revision,
+                    "clean_asset_id": clean_asset_id,
+                })
+            conn.execute(
+                "UPDATE storyboard_shots SET revision=revision+1,image_asset_id=? WHERE id=?",
+                (created[0]["clean_asset_id"], shot_id),
+            )
+            conn.execute(
+                """UPDATE storyboards SET revision=revision+1,updated_at=?,animatic_status='stale',
+                animatic_confirmed_at=NULL,frozen_snapshot_hash=NULL WHERE id=?""",
+                (timestamp, storyboard_id),
+            )
+            board_revision = int(board["revision"]) + 1
+            _insert_workflow_event(
+                conn, task_id=board["task_id"], client_id=client_id,
+                event_type="shot.regenerated",
+                payload={
+                    "storyboard_id": storyboard_id, "shot_id": shot_id,
+                    "panels": created, "version": board_revision,
+                },
+            )
+        result = self.get_storyboard(storyboard_id, client_id=client_id)
         assert result is not None
         return result
 

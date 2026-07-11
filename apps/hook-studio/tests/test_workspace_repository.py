@@ -10,6 +10,17 @@ from app.repositories.workspace import (
 )
 
 
+def _storyboard_panels(asset_id):
+    return [
+        {
+            "ordinal": ordinal, "logical_key": role, "role": role, "required": True,
+            "description": role, "clean_asset_id": asset_id,
+            "selected_asset_id": asset_id, "send_to_provider": True,
+        }
+        for ordinal, role in enumerate(("start", "action", "result"), start=1)
+    ]
+
+
 def _repo(tmp_path):
     db = Database(tmp_path / "workspace.sqlite3")
     db.initialize()
@@ -48,11 +59,12 @@ def test_tasks_storyboard_and_optimistic_version(tmp_path):
         kind="long_video", title="60秒品牌片", params={"duration_seconds": 60},
     )
     image = repo.create_asset(
-        client_id="c1", source_type="generated", media_type="image", storage_uri="oss://shot-1.jpg",
+        client_id="c1", source_type="storyboard_clean", media_type="image", storage_uri="oss://shot-1.jpg",
     )
     storyboard = repo.save_storyboard(task["id"], [
-        {"title": "开场", "duration_seconds": 5, "image_asset_id": image["id"], "camera": "推近"},
-        {"title": "证明", "duration_seconds": 8},
+        {"title": "开场", "duration_seconds": 5, "image_asset_id": image["id"],
+         "camera": "推近", "panels": _storyboard_panels(image["id"])},
+        {"title": "证明", "duration_seconds": 8, "panels": _storyboard_panels(image["id"])},
     ], client_id="c1")
     updated = repo.update_task(
         task["id"], {"status": "awaiting_confirmation", "stage": "storyboard", "progress": 0.25},

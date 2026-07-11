@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from app.repositories.workspace import WorkspaceConflict, WorkspaceRepository
+from app.repositories.workspace import WorkspaceConflict, WorkspaceNotFound, WorkspaceRepository
 from app.models import EventAction, EventRecord, Mode
+from app.qc import evaluate_video_probe
 from app.services.analysis import ReferenceAnalysisService
 from app.services.audio import AudioReplacementService
 from app.services.media_ops import render_animatic_frames, replace_segment_file
@@ -103,10 +104,22 @@ class ProductionManager:
             image_running, video_running = len(self._running["image"]), len(self._running["video"])
         with self.repository.db.transaction() as conn:
             counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM task_runs WHERE deleted_at IS NULL GROUP BY status")}
+            lane_counts = {
+                (row["lane"], row["status"]): int(row["n"])
+                for row in conn.execute(
+                    """SELECT CASE WHEN kind='image' THEN 'image' ELSE 'video' END lane,
+                    status,COUNT(*) n FROM task_runs WHERE deleted_at IS NULL
+                    GROUP BY lane,status"""
+                )
+            }
         return {
             "queued": image_queued + video_queued, "running": image_running + video_running,
             "image_queued": image_queued, "video_queued": video_queued,
             "image_running": image_running, "video_running": video_running,
+            "image_succeeded": lane_counts.get(("image", "succeeded"), 0),
+            "image_failed": lane_counts.get(("image", "failed"), 0),
+            "video_succeeded": lane_counts.get(("video", "succeeded"), 0),
+            "video_failed": lane_counts.get(("video", "failed"), 0),
             "waiting_approval": int(counts.get("waiting_approval", 0)),
             "succeeded": int(counts.get("succeeded", 0)), "failed": int(counts.get("failed", 0)),
             "concurrency": self.concurrency,
@@ -330,6 +343,19 @@ class ProductionManager:
             raise WorkspaceConflict("storyboard is unavailable")
         return board
 
+    def _require_production_gate(
+        self, board: dict[str, Any], *, client_id: str,
+    ) -> dict[str, Any]:
+        return self.shot_gate.require(
+            board,
+            resolve_asset=lambda asset_id: self.repository.get_asset(
+                asset_id, client_id=client_id,
+            ),
+            resolve_reference=lambda _kind, url: self.repository.get_asset_by_storage_uri(
+                url, client_id=client_id,
+            ),
+        )
+
     async def create_animatic(
         self, storyboard_id: str, *, client_id: str, expected_version: int,
         confirm: bool = False,
@@ -384,7 +410,9 @@ class ProductionManager:
         expected_version: int, feedback: str = "",
     ) -> dict[str, Any]:
         board = self.repository.get_storyboard(storyboard_id, client_id=client_id)
-        if board is None or int(board["revision"]) != expected_version:
+        if board is None:
+            raise WorkspaceNotFound("storyboard not found")
+        if int(board["revision"]) != expected_version:
             raise WorkspaceConflict("storyboard version changed")
         shot = next((item for item in board["shots"] if any(panel["id"] == panel_id for panel in item["panels"])), None)
         panel = next((item for item in (shot or {}).get("panels", []) if item["id"] == panel_id), None)
@@ -434,6 +462,88 @@ class ProductionManager:
             self.repository.release(reservation_id=reservation["reservation"]["id"], client_id=client_id)
             raise
 
+    async def regenerate_shot(
+        self, storyboard_id: str, shot_id: str, *, client_id: str,
+        expected_version: int, feedback: str = "",
+    ) -> dict[str, Any]:
+        board = self.repository.get_storyboard(storyboard_id, client_id=client_id)
+        if board is None:
+            raise WorkspaceNotFound("storyboard not found")
+        if int(board["revision"]) != expected_version:
+            raise WorkspaceConflict("storyboard version changed")
+        shot = next((item for item in board["shots"] if item["id"] == shot_id), None)
+        if shot is None:
+            raise WorkspaceConflict("shot is unavailable")
+        panels = list(shot.get("panels") or [])
+        if not panels:
+            raise WorkspaceConflict("shot has no panels")
+        task = self.repository.get_task(board["task_id"], client_id=client_id)
+        if task is None:
+            raise WorkspaceConflict("task is unavailable")
+        reservation = self.repository.reserve(
+            client_id=client_id, resource="image", units=len(panels),
+            client_limit=int(task["params"].get("client_image_limit") or 1000),
+            global_limit=self.global_image_limit,
+        )
+        try:
+            payload = shot.get("payload") or {}
+            base_references = []
+            for panel in panels:
+                if not panel.get("selected_asset_id"):
+                    continue
+                asset = self.repository.get_asset(str(panel["selected_asset_id"]), client_id=client_id)
+                if asset and asset.get("storage_uri"):
+                    base_references.append(str(asset["storage_uri"]))
+            replacements = []
+            generated_references: list[str] = []
+            for panel in panels:
+                prompt = (
+                    f"9:16真实商业摄影clean frame。整镜重做：{shot.get('description') or payload.get('visual')}。"
+                    f"当前Panel：{panel.get('description')}。反馈：{feedback or '保持动作因果清楚'}。"
+                    "保持产品结构、主体身份、空间方向和三个Panel连续性。"
+                    "无字幕、无标注、无箭头、无网格、无水印。"
+                )
+                references = [
+                    url for url in base_references
+                    if url not in generated_references
+                ] + generated_references
+                async with self._image_slots:
+                    result = await self.provider.generate_image(
+                        prompt=prompt, reference_urls=references[:9],
+                        request_id=(
+                            f"{board['task_id']}:shot:{shot_id}:{panel['logical_key']}:"
+                            f"r{int(panel['revision']) + 1}"
+                        ),
+                        metadata={
+                            "task_id": board["task_id"], "shot_id": shot_id,
+                            "panel_id": panel["id"], "whole_shot": True,
+                        },
+                    )
+                if not result.result_url:
+                    raise ProductionError("整镜重生成未返回clean frame")
+                generated_references.append(result.result_url)
+                asset = self.repository.create_asset(
+                    client_id=client_id, source_type="storyboard_clean", media_type="image",
+                    storage_uri=result.result_url, status="ready",
+                    metadata={
+                        "task_id": board["task_id"], "shot_id": shot_id,
+                        "replaces_panel": panel["id"], "whole_shot": True,
+                    },
+                )
+                replacements.append({
+                    "panel_id": panel["id"], "clean_asset_id": asset["id"],
+                    "description": feedback or panel.get("description"),
+                })
+            revised = self.repository.revise_shot_panels(
+                storyboard_id, shot_id, client_id=client_id,
+                expected_version=expected_version, replacements=replacements,
+            )
+            self.repository.commit(reservation_id=reservation["reservation"]["id"], client_id=client_id)
+            return revised
+        except Exception:
+            self.repository.release(reservation_id=reservation["reservation"]["id"], client_id=client_id)
+            raise
+
     async def produce(
         self, storyboard_id: str, *, client_id: str, expected_version: int,
         expected_task_version: int | None = None,
@@ -448,7 +558,7 @@ class ProductionManager:
             task_id=task["id"], storyboard_id=storyboard_id, skill_id=self.shot_gate.skill_id,
             skill_version=self.shot_gate.version, stage="preflight", public_label="生产前完整性门禁",
             inputs={"revision": expected_version, "coverage": board.get("coverage")},
-            operation=lambda: self.shot_gate.require(board), blocking=True,
+            operation=lambda: self._require_production_gate(board, client_id=client_id), blocking=True,
         )
         self.skill_runtime.execute(
             task_id=task["id"], storyboard_id=storyboard_id, skill_id=self.approval_policy.skill_id,
@@ -507,20 +617,20 @@ class ProductionManager:
         await self._probe_video(result.result_url, request_id=f"{request_id}:qc")
         return result
 
-    async def _probe_video(self, url: str, *, request_id: str) -> dict[str, Any]:
+    async def _probe_video(
+        self, url: str, *, request_id: str, max_duration: float = 15.5,
+    ) -> dict[str, Any]:
         probe = await self.provider.probe_media(url, request_id=request_id)
-        streams = probe.get("streams") if isinstance(probe, dict) else []
-        if not isinstance(streams, list) or not any(item.get("codec_type") == "video" for item in streams):
-            raise ProductionError("技术质检未检测到有效视频轨")
-        duration = float(probe.get("duration") or (probe.get("format") or {}).get("duration") or 0)
-        if duration <= 0:
-            raise ProductionError("技术质检未检测到有效视频时长")
-        return probe
+        result = evaluate_video_probe(probe, max_duration=max_duration)
+        if not result.passed:
+            failed = "、".join(item.id for item in result.checks if item.status != "pass")
+            raise ProductionError(f"技术质检未通过：{failed}")
+        return result.as_dict()
 
     async def _execute(self, task: dict[str, Any]) -> None:
         params = task["params"]; assets = self._task_assets(task)
         board = self._storyboard_for_task(task["id"], client_id=task["client_id"])
-        self.shot_gate.require(board)
+        self._require_production_gate(board, client_id=task["client_id"])
         if not board.get("frozen_snapshot_hash"):
             raise ProductionError("故事板尚未冻结，禁止提交视频")
         shots = board["shots"]
@@ -537,7 +647,9 @@ class ProductionManager:
                 generated = await self._wait_video(generated, f"{task['id']}:replace")
             output = await replace_segment_file(source_videos[0], generated.result_url, start=start, end=end)
             final_url = await self.provider.upload_blob(f"replacement-{task['id']}.mp4", output, "video/mp4", stage="video.replace", request_id=task["id"])
-            probe = await self._probe_video(final_url, request_id=f"{task['id']}:replace:qc")
+            probe = await self._probe_video(
+                final_url, request_id=f"{task['id']}:replace:qc", max_duration=60.5,
+            )
             final_assets.append(self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=final_url, status="ready", metadata={"task_id": task["id"], "operation": "targeted_replace", "range": [start, end], "qc": probe}))
         else:
             progress_lock = asyncio.Lock()
@@ -578,7 +690,10 @@ class ProductionManager:
                     transcode = await self.provider.transcode(segment_urls, filename=f"{task['id']}-variant-{variant + 1}.mp4", request_id=f"{task['id']}:assemble:{variant + 1}")
                 if not transcode.result_url:
                     raise ProductionError("视频拼接未返回结果")
-                probe = await self._probe_video(transcode.result_url, request_id=f"{task['id']}:assemble:{variant + 1}:qc")
+                probe = await self._probe_video(
+                    transcode.result_url, request_id=f"{task['id']}:assemble:{variant + 1}:qc",
+                    max_duration=60.5,
+                )
                 return self.repository.create_asset(client_id=task["client_id"], source_type="generated", media_type="video", storage_uri=transcode.result_url, status="ready", metadata={"task_id": task["id"], "variant": variant + 1, "segments": segment_urls, "qc": probe})
 
             final_assets = list(await asyncio.gather(*(generate_variant(variant) for variant in range(batch_count))))
