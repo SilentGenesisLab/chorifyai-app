@@ -36,7 +36,7 @@ def _dimensions(probe: dict[str, Any]) -> tuple[int, int]:
     return int(video.get("width") or stream.get("width") or probe.get("width") or 0), int(video.get("height") or stream.get("height") or probe.get("height") or 0)
 
 
-def evaluate_video_probe(probe: dict[str, Any], *, min_duration: float = 3.8, max_duration: float = 5.5, ratio_tolerance: float = 0.04) -> QCResult:
+def evaluate_video_probe(probe: dict[str, Any], *, min_duration: float = 3.8, max_duration: float = 15.5, ratio_tolerance: float = 0.04) -> QCResult:
     streams = probe.get("streams") if isinstance(probe.get("streams"), list) else []
     width, height = _dimensions(probe)
     duration = _number(probe.get("duration") or (probe.get("format") or {}).get("duration"))
@@ -46,7 +46,7 @@ def evaluate_video_probe(probe: dict[str, Any], *, min_duration: float = 3.8, ma
     checks = [
         QCCheck("result-url", "pass", "产物URL已由调用方验证"),
         QCCheck("playable-video", "pass" if has_video else "fail", "成片必须含可播放视频流", {"width": width, "height": height}),
-        QCCheck("duration", "pass" if min_duration <= duration <= max_duration else "fail", "成片时长必须为4-5秒", {"duration": duration}),
+        QCCheck("duration", "pass" if min_duration <= duration <= max_duration else "fail", "单镜成片时长必须为4-15秒", {"duration": duration}),
         QCCheck("ratio", "pass" if height > width and abs(ratio - 9 / 16) <= ratio_tolerance else "fail", "成片必须为9:16竖屏", {"ratio": ratio}),
         QCCheck("native-audio", "pass" if has_audio else "fail", "成片缺少原生环境音或动作音轨"),
     ]
