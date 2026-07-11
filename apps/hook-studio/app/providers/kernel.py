@@ -6,7 +6,7 @@ import mimetypes
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterable, BinaryIO, Iterable
+from typing import Any, AsyncIterable, BinaryIO, Iterable, Literal
 from uuid import uuid4
 
 import httpx
@@ -36,6 +36,8 @@ class ProviderResult:
 
 class KernelProvider:
     """Server-only adapter for the verified Kernel capability contract."""
+
+    VERIFIED_VIDEO_MODES = frozenset({"multimodal"})
 
     def __init__(self, base_url: str, api_key: str | None, *, timeout_seconds: float = 60, client: httpx.AsyncClient | None = None):
         self.base_url = base_url.rstrip("/")
@@ -212,14 +214,25 @@ class KernelProvider:
         request_id: str,
         video_urls: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        generation_mode: Literal["multimodal", "first_frame", "first_last", "multiframe", "extend", "edit"] = "multimodal",
     ) -> ProviderResult:
-        payload = {"prompt": prompt, "image_urls": image_urls, "video_urls": list(video_urls or []), "duration": duration, "ratio": "9:16", "resolution": "720p", "external_ref": f"hook-studio:{request_id}", "stage": "video.submit", "metadata": {"hook_job_id": request_id, **(metadata or {})}}
+        if generation_mode not in self.VERIFIED_VIDEO_MODES:
+            raise ProviderRejected(f"{generation_mode} 尚未通过真实能力探针，当前不可提交")
+        if duration < 4 or duration > 15:
+            raise ProviderRejected("单个视频镜头时长必须为4-15秒")
+        videos = list(video_urls or [])
+        if len(image_urls) > 9 or len(videos) > 3:
+            raise ProviderRejected("参考素材超过当前内核上限（图片9张、视频3条）")
+        public_metadata = {"hook_job_id": request_id, **(metadata or {}), "generation_mode": generation_mode}
+        payload = {"prompt": prompt, "image_urls": image_urls, "video_urls": videos, "duration": duration, "ratio": "9:16", "resolution": "720p", "external_ref": f"hook-studio:{request_id}", "stage": "video.submit", "metadata": public_metadata}
         data = await self._request("POST", "/capabilities/v1/videos/generate", json=payload, request_id=request_id)
         submit_id = data.get("submit_id")
         if not submit_id:
             raise ProviderRejected("视频提交响应缺少submit_id")
         trace = dict(data.get("provider_trace") or {})
         trace["attempts"] = int(data.get("_hook_attempts", 1))
+        trace["generation_mode"] = generation_mode
+        trace["capability_contract"] = "hook.video.v2"
         return ProviderResult(str(data.get("status", "submitted")), data.get("video_url"), str(submit_id), data.get("local_path"), data.get("failure_reason"), trace)
 
     async def poll_video(self, submit_id: str, *, request_id: str, external_ref: str = "hook-studio") -> ProviderResult:

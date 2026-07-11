@@ -61,6 +61,39 @@ def test_submit_video_forwards_reference_videos():
     assert payload["video_urls"] == ["https://cdn/reference.mp4"]
     assert payload["image_urls"] == ["https://cdn/product.jpg"]
     assert payload["external_ref"] == "hook-studio:j2"
+    assert payload["metadata"]["generation_mode"] == "multimodal"
+
+ asyncio.run(run())
+
+
+def test_submit_video_rejects_unverified_mode_before_network():
+ async def run():
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"submit_id": "unexpected"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = KernelProvider("http://kernel", None, client=client)
+        with pytest.raises(ProviderRejected, match="能力探针"):
+            await provider.submit_video(
+                prompt="p", image_urls=["https://cdn/start.jpg"], duration=8,
+                request_id="mode-1", generation_mode="first_last",
+            )
+    assert calls == 0
+
+ asyncio.run(run())
+
+
+@pytest.mark.parametrize("duration", [3, 16])
+def test_submit_video_enforces_single_shot_duration(duration):
+ async def run():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500))) as client:
+        provider = KernelProvider("http://kernel", None, client=client)
+        with pytest.raises(ProviderRejected, match="4-15秒"):
+            await provider.submit_video(prompt="p", image_urls=[], duration=duration, request_id="duration-1")
 
  asyncio.run(run())
 
