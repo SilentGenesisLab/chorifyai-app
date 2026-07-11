@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlsplit
 
 
 SCHEMA = """
@@ -373,6 +374,20 @@ class Database:
         return hashlib.sha256(f"{namespace}:{value}".encode("utf-8")).hexdigest()[:32]
 
     @staticmethod
+    def _is_sendable_url(value: object) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        parsed = urlsplit(value.strip())
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    @staticmethod
+    def _legacy_description(description: object, title: object, fallback: str) -> str:
+        for value in (description, title):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return fallback
+
+    @staticmethod
     def _normalize_legacy_payload(payload: object, description: str, *, version: int) -> dict[str, object]:
         if not isinstance(payload, dict):
             payload = {}
@@ -432,7 +447,9 @@ class Database:
         }
         for row in rows:
             shot_id = str(row["id"])
-            description = str(row["description"] or row["title"] or f"历史镜头 {row['ordinal']}")
+            description = cls._legacy_description(
+                row["description"], row["title"], f"历史镜头 {row['ordinal']}",
+            )
             try:
                 payload = json.loads(row["payload_json"] or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -444,7 +461,7 @@ class Database:
                 and row["source_client_id"] == row["client_id"]
                 and row["source_media_type"] == "image"
                 and row["source_status"] == "ready"
-                and row["source_storage_uri"]
+                and cls._is_sendable_url(row["source_storage_uri"])
                 and row["source_deleted_at"] is None
             )
             migration_status = "backfilled" if valid_source else "quarantined"
@@ -513,13 +530,19 @@ class Database:
     @classmethod
     def _normalize_legacy_storyboards_v5(cls, conn: sqlite3.Connection, timestamp: str) -> None:
         rows = conn.execute(
-            """SELECT sh.id,sh.title,sh.description,sh.payload_json
+            """SELECT sh.id,sh.storyboard_id,sh.title,sh.description,sh.payload_json,sh.image_asset_id,
+            t.client_id,a.client_id asset_client_id,a.source_type asset_source_type,
+            a.media_type asset_media_type,a.status asset_status,a.storage_uri asset_storage_uri,
+            a.deleted_at asset_deleted_at
             FROM storyboard_shots sh
             JOIN legacy_storyboard_migrations migration ON migration.shot_id=sh.id
+            JOIN storyboards board ON board.id=sh.storyboard_id
+            JOIN task_runs t ON t.id=board.task_id
+            LEFT JOIN assets a ON a.id=sh.image_asset_id
             ORDER BY sh.id"""
         ).fetchall()
         for row in rows:
-            description = str(row["description"] or row["title"] or "历史镜头")
+            description = cls._legacy_description(row["description"], row["title"], "历史镜头")
             try:
                 payload = json.loads(row["payload_json"] or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -529,10 +552,41 @@ class Database:
                 "UPDATE storyboard_shots SET description=?,payload_json=? WHERE id=?",
                 (description, json.dumps(normalized, ensure_ascii=False), row["id"]),
             )
+            usable = bool(
+                row["image_asset_id"]
+                and row["asset_client_id"] == row["client_id"]
+                and row["asset_source_type"] == "storyboard_clean"
+                and row["asset_media_type"] == "image"
+                and row["asset_status"] == "ready"
+                and cls._is_sendable_url(row["asset_storage_uri"])
+                and row["asset_deleted_at"] is None
+            )
+            if not usable:
+                conn.execute(
+                    "UPDATE storyboard_shots SET status='legacy_incomplete' WHERE id=?", (row["id"],),
+                )
+                conn.execute(
+                    "UPDATE storyboards SET status='legacy_incomplete',updated_at=? WHERE id=?",
+                    (timestamp, row["storyboard_id"]),
+                )
+                conn.execute(
+                    """UPDATE storyboard_panels SET status='legacy_incomplete',updated_at=?
+                    WHERE shot_id=?""", (timestamp, row["id"]),
+                )
+                conn.execute(
+                    """UPDATE assets SET status='missing',updated_at=? WHERE id IN (
+                    SELECT clean_asset_id FROM storyboard_panels WHERE shot_id=?
+                    UNION SELECT annotated_asset_id FROM storyboard_panels WHERE shot_id=?
+                    )""", (timestamp, row["id"], row["id"]),
+                )
             conn.execute(
                 """UPDATE legacy_storyboard_migrations
-                SET contract_version=5,normalized_at=? WHERE shot_id=?""",
-                (timestamp, row["id"]),
+                SET contract_version=5,normalized_at=?,status=?,reason=? WHERE shot_id=?""",
+                (
+                    timestamp, "backfilled" if usable else "quarantined",
+                    None if usable else "legacy shot has no sendable tenant-owned image",
+                    row["id"],
+                ),
             )
 
     def initialize(self) -> None:

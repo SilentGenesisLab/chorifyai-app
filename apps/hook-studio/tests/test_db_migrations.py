@@ -73,12 +73,19 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
             (timestamp, timestamp),
         )
         conn.execute(
+            """INSERT INTO assets(id,client_id,source_type,media_type,filename,mime_type,storage_uri,
+            status,metadata_json,created_at,updated_at) VALUES(
+            'old-file-image','client-1','generated','image','local.png','image/png','file:///C:/legacy.png',
+            'ready','{}',?,?)""",
+            (timestamp, timestamp),
+        )
+        conn.execute(
             "INSERT INTO storyboards(id,task_id,version,status,summary,created_at) VALUES('b1','t1',1,'waiting_approval','旧板',?)",
             (timestamp,),
         )
         conn.execute(
             """INSERT INTO storyboard_shots(id,storyboard_id,ordinal,title,description,duration_seconds,
-            image_asset_id,status,payload_json) VALUES('s1','b1',1,'旧镜头','旧描述',5,'old-image','draft',?)""",
+            image_asset_id,status,payload_json) VALUES('s1','b1',1,'旧镜头','   ',5,'old-image','draft',?)""",
             (json.dumps({
                 "visual": ["错误类型"], "story_function": {"bad": True},
                 "stable_truth": "product", "may_vary": {"bad": True}, "shot_size": "   ",
@@ -86,7 +93,7 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
         )
         conn.execute(
             """INSERT INTO storyboard_shots(id,storyboard_id,ordinal,title,description,duration_seconds,
-            image_asset_id,status,payload_json) VALUES('s2','b1',2,'缺图镜头','仍需可读',5,NULL,'draft','{}')"""
+            image_asset_id,status,payload_json) VALUES('s2','b1',2,'不可发送镜头','仍需可读',5,'old-file-image','draft','{}')"""
         )
 
     db = Database(path)
@@ -98,7 +105,7 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()]
         shots = conn.execute(
-            "SELECT id,status,image_asset_id,payload_json FROM storyboard_shots ORDER BY ordinal"
+            "SELECT id,status,image_asset_id,description,payload_json FROM storyboard_shots ORDER BY ordinal"
         ).fetchall()
         panels = conn.execute(
             "SELECT * FROM storyboard_panels ORDER BY shot_id,ordinal"
@@ -116,6 +123,7 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
     assert versions == [1, 2, 3, 4, 5]
     assert len(panels) == 6
     for shot in shots:
+        assert shot["description"].strip()
         shot_panels = [panel for panel in panels if panel["shot_id"] == shot["id"]]
         assert [panel["role"] for panel in shot_panels] == ["start", "action", "result"]
         assert all(panel["required"] and panel["selected_asset_id"] for panel in shot_panels)
@@ -140,3 +148,25 @@ def test_v2_storyboards_backfill_full_contract_panels_and_quarantine_missing_med
     assert board["status"] == "legacy_incomplete"
     assert integrity == "ok"
     assert foreign_key_errors == []
+
+    with db.transaction(immediate=True) as conn:
+        conn.execute(
+            "UPDATE assets SET status='ready',storage_uri='file:///C:/legacy.png' WHERE id=?",
+            (valid_clean["id"],),
+        )
+        conn.execute(
+            """UPDATE legacy_storyboard_migrations SET status='backfilled',reason=NULL,
+            contract_version=4,normalized_at=NULL WHERE shot_id='s1'"""
+        )
+        Database._normalize_legacy_storyboards_v5(conn, "2026-07-11T10:00:00+00:00")
+        rechecked = conn.execute(
+            "SELECT * FROM legacy_storyboard_migrations WHERE shot_id='s1'"
+        ).fetchone()
+        rechecked_asset = conn.execute(
+            "SELECT status FROM assets WHERE id=?", (valid_clean["id"],)
+        ).fetchone()
+
+    assert rechecked["status"] == "quarantined"
+    assert rechecked["contract_version"] == 5
+    assert rechecked["reason"] == "legacy shot has no sendable tenant-owned image"
+    assert rechecked_asset["status"] == "missing"
