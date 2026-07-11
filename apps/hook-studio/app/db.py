@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -343,9 +345,151 @@ CREATE INDEX IF NOT EXISTS idx_approval_decisions_target
 """
 
 
+SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS legacy_storyboard_migrations (
+  shot_id TEXT PRIMARY KEY REFERENCES storyboard_shots(id) ON DELETE CASCADE,
+  storyboard_id TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  reason TEXT,
+  migrated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_storyboard_migrations_board
+  ON legacy_storyboard_migrations(storyboard_id, status);
+"""
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = Path(path)
+
+    @staticmethod
+    def _legacy_id(namespace: str, value: str) -> str:
+        return hashlib.sha256(f"{namespace}:{value}".encode("utf-8")).hexdigest()[:32]
+
+    @classmethod
+    def _migrate_legacy_storyboards_v4(cls, conn: sqlite3.Connection, timestamp: str) -> None:
+        rows = conn.execute(
+            """SELECT sh.*,b.task_id,t.client_id,
+            a.client_id source_client_id,a.filename source_filename,a.mime_type source_mime_type,
+            a.storage_uri source_storage_uri,a.source_url source_source_url,
+            a.byte_size source_byte_size,a.status source_status,a.media_type source_media_type,
+            a.deleted_at source_deleted_at
+            FROM storyboard_shots sh
+            JOIN storyboards b ON b.id=sh.storyboard_id
+            JOIN task_runs t ON t.id=b.task_id
+            LEFT JOIN assets a ON a.id=sh.image_asset_id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM storyboard_panels p WHERE p.shot_id=sh.id
+            ) ORDER BY sh.storyboard_id,sh.ordinal,sh.id"""
+        ).fetchall()
+        role_copy = {
+            "start": (1, "动作起点", "动作开始前，主体、产品和空间位置清楚可见"),
+            "action": (2, "关键动作", "主体执行唯一关键动作，产品触点与动作因果清楚"),
+            "result": (3, "可见结果", "动作完成，产品结果稳定且可被观众直接验证"),
+        }
+        for row in rows:
+            shot_id = str(row["id"])
+            description = str(row["description"] or row["title"] or f"历史镜头 {row['ordinal']}")
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            defaults = {
+                "story_function": "历史镜头复核",
+                "visual": description,
+                "shot_size": "中景",
+                "camera_angle": "平视",
+                "camera_height": "胸口高度",
+                "lens_feel": "自然透视",
+                "composition": "主体位于9:16画面中心，前中后景关系清楚",
+                "action_start": "动作开始前，主体与产品位置清楚",
+                "action_trigger": "主体开始执行镜头动作",
+                "action_result": "动作完成且结果清楚可见",
+                "camera_move": "固定机位或缓慢推进，保持主体连续",
+                "sound": "保留现场环境声与动作音",
+                "transition": "按动作结果切入下一镜",
+                "stable_truth": ["产品外观", "主体身份", "空间方向"],
+                "may_vary": ["自然微表情", "轻微环境变化"],
+                "first_failure_cue": "产品外观、动作终点或空间方向异常即回炉",
+            }
+            for key, value in defaults.items():
+                if not payload.get(key):
+                    payload[key] = value
+            payload["reference_manifest"] = []
+            payload["legacy_migration"] = {"version": 4, "source": "v2_storyboard_shot"}
+
+            valid_source = bool(
+                row["image_asset_id"]
+                and row["source_client_id"] == row["client_id"]
+                and row["source_media_type"] == "image"
+                and row["source_status"] == "ready"
+                and row["source_storage_uri"]
+                and row["source_deleted_at"] is None
+            )
+            migration_status = "backfilled" if valid_source else "quarantined"
+            clean_id = cls._legacy_id("legacy-clean", shot_id)
+            annotated_id = cls._legacy_id("legacy-annotated", shot_id)
+            asset_metadata = json.dumps({
+                "legacy_migration": "v4", "source_asset_id": row["image_asset_id"],
+                "quarantined": not valid_source,
+            }, ensure_ascii=False)
+            for asset_id, source_type, suffix in (
+                (clean_id, "storyboard_clean", "clean"),
+                (annotated_id, "storyboard_annotated", "annotated"),
+            ):
+                conn.execute(
+                    """INSERT OR IGNORE INTO assets(
+                    id,client_id,source_type,media_type,filename,mime_type,storage_uri,source_url,
+                    byte_size,sha256,status,metadata_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,?,?,?)""",
+                    (
+                        asset_id, row["client_id"], source_type, "image",
+                        f"legacy-{shot_id}-{suffix}.png", row["source_mime_type"] or "image/png",
+                        row["source_storage_uri"] if valid_source else None,
+                        row["source_source_url"] if valid_source else None,
+                        row["source_byte_size"] if valid_source else None,
+                        "ready" if valid_source else "missing", asset_metadata, timestamp, timestamp,
+                    ),
+                )
+            shot_status = row["status"] if valid_source else "legacy_incomplete"
+            conn.execute(
+                """UPDATE storyboard_shots SET description=?,image_asset_id=?,status=?,payload_json=?
+                WHERE id=?""",
+                (description, clean_id, shot_status, json.dumps(payload, ensure_ascii=False), shot_id),
+            )
+            for role, (ordinal, label, panel_description) in role_copy.items():
+                panel_id = cls._legacy_id(f"legacy-panel-{role}", shot_id)
+                conn.execute(
+                    """INSERT INTO storyboard_panels(
+                    id,storyboard_id,shot_id,logical_key,ordinal,revision,role,required,description,
+                    annotation_json,annotated_asset_id,clean_asset_id,selected_asset_id,send_to_provider,
+                    status,metadata_json,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,1,?,1,?,?,?,?,?,1,?,?,?,?)""",
+                    (
+                        panel_id, row["storyboard_id"], shot_id, role, ordinal, role,
+                        panel_description, json.dumps({"label": label, "legacy": True}, ensure_ascii=False),
+                        annotated_id, clean_id, clean_id,
+                        "draft" if valid_source else "legacy_incomplete",
+                        json.dumps({"legacy_migration": "v4"}, ensure_ascii=False), timestamp, timestamp,
+                    ),
+                )
+            if not valid_source:
+                conn.execute(
+                    "UPDATE storyboards SET status='legacy_incomplete',updated_at=? WHERE id=?",
+                    (timestamp, row["storyboard_id"]),
+                )
+            conn.execute(
+                """INSERT INTO legacy_storyboard_migrations(
+                shot_id,storyboard_id,status,reason,migrated_at
+                ) VALUES(?,?,?,?,?)""",
+                (
+                    shot_id, row["storyboard_id"], migration_status,
+                    None if valid_source else "legacy shot has no ready tenant-owned image",
+                    timestamp,
+                ),
+            )
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -387,6 +531,19 @@ class Database:
                         "VALUES(3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));\n"
                         "PRAGMA user_version=3;\nCOMMIT;"
                     )
+                except Exception:
+                    conn.rollback()
+                    raise
+                applied.add(3)
+            if 4 not in applied:
+                try:
+                    conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA_V4)
+                    self._migrate_legacy_storyboards_v4(conn, now)
+                    conn.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES(4, ?)", (now,),
+                    )
+                    conn.execute("PRAGMA user_version=4")
+                    conn.commit()
                 except Exception:
                     conn.rollback()
                     raise
