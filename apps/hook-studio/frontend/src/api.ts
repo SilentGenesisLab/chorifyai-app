@@ -1,7 +1,10 @@
-import type { ClientUsage, Conversation, Session, Task, ToolMode, Usage } from './types'
+import type {
+  ClientUsage, Conversation, DecisionValue, Session, Task, ToolMode,
+  Usage, WorkflowEvent,
+} from './types'
 
 const appBase = (import.meta.env.BASE_URL || '/hook-studio/').replace(/\/$/, '')
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') || `${appBase}/api`
+export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') || `${appBase}/api`
 
 export class ApiError extends Error {
   requestId?: string
@@ -58,12 +61,49 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T
 }
 
+function decodeEvent(taskId: string, source: MessageEvent<string>, fallbackType = 'message'): WorkflowEvent {
+  let payload: Record<string, unknown> = {}
+  try { payload = record(source.data ? JSON.parse(source.data) : {}) } catch { payload = { message: source.data } }
+  const data = record(payload.data)
+  const counts = record(data.counts || data.queue || payload.queue)
+  return {
+    schema: String(payload.schema || 'hook.event.v1'),
+    id: String(payload.id || source.lastEventId || `${taskId}-${Date.now()}`),
+    taskId: String(payload.task_id || payload.taskId || taskId),
+    type: String(payload.type || payload.event_type || fallbackType),
+    state: payload.state as WorkflowEvent['state'],
+    publicLabel: String(payload.public_label || payload.publicLabel || payload.label || data.public_label || data.publicLabel || data.label || '任务更新'),
+    message: String(payload.message || payload.public_message || payload.detail || data.message || data.public_message || data.detail || '任务仍在处理'),
+    occurredAt: String(payload.occurred_at || payload.occurredAt || payload.ts || new Date().toISOString()),
+    heartbeatAt: String(payload.heartbeat_at || payload.heartbeatAt || ''),
+    indeterminate: Boolean(payload.indeterminate ?? data.indeterminate),
+    waitedSeconds: Number(payload.waited_seconds ?? payload.waitedSeconds ?? data.waited_seconds ?? data.waitedSeconds) || undefined,
+    inputCount: Number(payload.input_count ?? payload.inputCount ?? data.input_count ?? data.inputCount) || undefined,
+    outputCount: Number(payload.output_count ?? payload.outputCount ?? data.output_count ?? data.outputCount) || undefined,
+    queue: Object.keys(counts).length ? {
+      imageQueued: Number(counts.image_queued ?? counts.imageQueued) || 0,
+      imageRunning: Number(counts.image_running ?? counts.imageRunning) || 0,
+      imageSucceeded: Number(counts.image_succeeded ?? counts.imageSucceeded) || 0,
+      imageFailed: Number(counts.image_failed ?? counts.imageFailed) || 0,
+      videoQueued: Number(counts.video_queued ?? counts.videoQueued) || 0,
+      videoRunning: Number(counts.video_running ?? counts.videoRunning) || 0,
+      videoSucceeded: Number(counts.video_succeeded ?? counts.videoSucceeded) || 0,
+      videoFailed: Number(counts.video_failed ?? counts.videoFailed) || 0,
+      waitingApproval: Number(counts.waiting_approval ?? counts.waitingApproval) || 0,
+      succeeded: Number(counts.succeeded) || 0,
+      failed: Number(counts.failed) || 0,
+    } : undefined,
+    snapshot: payload.snapshot || payload.data,
+  }
+}
+
 export interface SendMessageInput {
   text: string
   tool: ToolMode
   durationSeconds?: number
   files: File[]
   links: string[]
+  idempotencyKey: string
 }
 
 export const api = {
@@ -90,9 +130,48 @@ export const api = {
     body.append('links', JSON.stringify(input.links))
     if (input.durationSeconds) body.append('duration_seconds', String(input.durationSeconds))
     input.files.forEach(file => body.append('attachments', file))
-    return request<Record<string, unknown>>(`/studio/conversations/${conversationId}/messages`, { method: 'POST', body })
+    return request<Record<string, unknown>>(`/studio/conversations/${conversationId}/messages`, {
+      method: 'POST', body, headers: { 'Idempotency-Key': input.idempotencyKey },
+    })
   },
   confirmStoryboard: (storyboardId: string, approved: boolean, feedback = '') => request<Record<string, unknown>>(`/studio/storyboards/${storyboardId}/confirm`, { method: 'POST', body: JSON.stringify({ approved, feedback }) }),
+
+  storyboard: (storyboardId: string) => request<unknown>(`/studio/storyboards/${storyboardId}`),
+  patchShot: (storyboardId: string, shotId: string, patch: Record<string, unknown>, expectedVersion: number) => request<unknown>(`/studio/storyboards/${storyboardId}/shots/${shotId}`, {
+    method: 'PATCH', body: JSON.stringify({ ...patch, expected_version: expectedVersion }),
+  }),
+  regeneratePanel: (storyboardId: string, panelId: string, feedback: string, expectedVersion: number) => request<unknown>(`/studio/storyboards/${storyboardId}/panels/${panelId}/regenerate`, {
+    method: 'POST', body: JSON.stringify({ feedback, expected_version: expectedVersion }),
+  }),
+  regenerateShot: (storyboardId: string, shotId: string, feedback: string, expectedVersion: number) => request<unknown>(`/studio/storyboards/${storyboardId}/shots/${shotId}/regenerate`, {
+    method: 'POST', body: JSON.stringify({ feedback, expected_version: expectedVersion }),
+  }),
+  panelCandidates: (storyboardId: string, panelId: string) => request<Record<string, unknown>>(`/studio/storyboards/${storyboardId}/panels/${panelId}/candidates`),
+  selectPanelCandidate: (storyboardId: string, panelId: string, candidateId: string, expectedVersion: number) => request<unknown>(`/studio/storyboards/${storyboardId}/panels/${panelId}/candidates/${candidateId}/select`, {
+    method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }),
+  }),
+  decideStoryboard: (storyboardId: string, input: { scope: 'storyboard' | 'shot' | 'panel' | 'animatic'; scopeId: string; decision: DecisionValue; feedback?: string; expectedVersion: number }) => request<unknown>(`/studio/storyboards/${storyboardId}/decisions`, {
+    method: 'POST', body: JSON.stringify({
+      scope: input.scope, target_id: input.scopeId, scope_id: input.scopeId, decision: input.decision,
+      approved: input.decision === 'approved', feedback: input.feedback || '', expected_version: input.expectedVersion,
+    }),
+  }),
+  createAnimatic: (storyboardId: string, expectedVersion: number) => request<unknown>(`/studio/storyboards/${storyboardId}/animatic`, {
+    method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }),
+  }),
+  produceStoryboard: (storyboardId: string, expectedVersion: number) => request<unknown>(`/studio/storyboards/${storyboardId}/produce`, {
+    method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }),
+  }),
+  openTaskEvents: (taskId: string, handlers: { onOpen?: () => void; onEvent: (event: WorkflowEvent) => void; onError?: () => void }) => {
+    const source = new EventSource(`${API_BASE}/studio/tasks/${encodeURIComponent(taskId)}/events`, { withCredentials: true })
+    source.onopen = () => handlers.onOpen?.()
+    source.onerror = () => handlers.onError?.()
+    source.onmessage = event => handlers.onEvent(decodeEvent(taskId, event))
+    ;['hook.event.v1', 'task.snapshot', 'task.updated', 'skill.updated', 'storyboard.updated', 'panel.updated', 'approval.updated', 'animatic.updated', 'heartbeat'].forEach(type => {
+      source.addEventListener(type, event => handlers.onEvent(decodeEvent(taskId, event as MessageEvent<string>, type)))
+    })
+    return () => source.close()
+  },
 
   tasks: async (conversationId?: string) => {
     const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''
