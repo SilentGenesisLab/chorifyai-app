@@ -23,6 +23,7 @@ from app.repositories.workspace import (
     WorkspaceRepository,
 )
 from app.services.ingestion import AttachmentIngestionService, IngestedContent, IngestionError
+from app.url_policy import is_sendable_media_url
 
 
 router = APIRouter(prefix="/api/studio", tags=["workspace"])
@@ -81,6 +82,12 @@ def _public_projection(value: Any) -> Any:
         normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
         if normalized in PUBLIC_INTERNAL_FIELDS or "provider" in normalized or normalized.startswith("model"):
             continue
+        if isinstance(item, str) and (normalized.endswith("url") or normalized.endswith("uri")):
+            projected[key] = item.strip() if is_sendable_media_url(item) else ""
+            continue
+        if isinstance(item, list) and normalized.endswith("urls"):
+            projected[key] = [url.strip() for url in item if is_sendable_media_url(url)]
+            continue
         projected[key] = _public_projection(item)
     return projected
 
@@ -97,14 +104,26 @@ def _http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail={"error_code": "INPUT_INVALID", "message": str(exc)})
 
 
+def _sendable_asset_url(asset: dict[str, Any] | None) -> str:
+    if not asset or asset.get("status") != "ready":
+        return ""
+    for candidate in (asset.get("storage_uri"), asset.get("source_url")):
+        if is_sendable_media_url(candidate):
+            return str(candidate).strip()
+    return ""
+
+
 def _asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
     metadata = asset.get("metadata") or {}
+    url = _sendable_asset_url(asset)
+    thumbnail = metadata.get("thumbnail_url")
+    thumbnail_url = str(thumbnail).strip() if is_sendable_media_url(thumbnail) else ""
     return {
         "id": asset["id"],
         "type": asset.get("media_type") or "document",
         "name": asset.get("filename") or ("生成视频" if asset.get("media_type") == "video" else "生成图片"),
-        "url": asset.get("storage_uri") or asset.get("source_url") or "",
-        "thumbnail_url": metadata.get("thumbnail_url") or (asset.get("storage_uri") if asset.get("media_type") == "image" else ""),
+        "url": url,
+        "thumbnail_url": thumbnail_url or (url if asset.get("media_type") == "image" else ""),
         "duration_seconds": metadata.get("duration_seconds") or metadata.get("duration"),
         "width": metadata.get("width"),
         "height": metadata.get("height"),
@@ -152,8 +171,8 @@ def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estima
                 "role": public_role, "required": bool(panel.get("required")),
                 "description": panel.get("description") or "", "annotation": panel.get("annotation") or {},
                 "clean_asset_id": panel.get("clean_asset_id"), "selected_asset_id": panel.get("selected_asset_id"),
-                "clean_url": (selected or {}).get("storage_uri") or "",
-                "annotated_url": (annotated or {}).get("storage_uri") or "",
+                "clean_url": _sendable_asset_url(selected),
+                "annotated_url": _sendable_asset_url(annotated),
                 "send_to_provider": bool(panel.get("send_to_provider")),
                 "approved": approved, "status": "approved" if approved else panel.get("status") or "draft",
                 "approval": {"scope": "panel", "scope_id": panel["id"], "decision": "approved",
@@ -167,7 +186,9 @@ def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estima
         shots.append({
             "id": shot["id"], "order": shot.get("ordinal"), "title": shot.get("title") or f"镜头 {shot.get('ordinal')}",
             "description": shot.get("description") or "", "duration_seconds": shot.get("duration_seconds") or 0,
-            "image_url": (image_asset or {}).get("storage_uri") or payload.get("image_url") or "",
+            "image_url": _sendable_asset_url(image_asset) or (
+                str(payload.get("image_url")).strip() if is_sendable_media_url(payload.get("image_url")) else ""
+            ),
             "revision": shot.get("revision", 1), "approved": bool(shot.get("approved")),
             "status": "approved" if shot.get("approved") else "draft", "panels": panels,
             **contract, "action_end": contract.get("action_result"), "lens": contract.get("lens_feel"),
@@ -226,7 +247,7 @@ def _storyboard_payload(repo: WorkspaceRepository, board: dict[str, Any], estima
         "animatic": {"id": board.get("animatic_asset_id") or f"animatic-{board['id']}",
                      "status": board.get("animatic_status") or "missing",
                      "asset_id": board.get("animatic_asset_id"),
-                     "url": (animatic_asset or {}).get("storage_uri") or "", "duration_seconds": total,
+                     "url": _sendable_asset_url(animatic_asset), "duration_seconds": total,
                      "version": int(board.get("revision") or 1),
                      "confirmed": board.get("animatic_status") == "confirmed"},
         "skill_runs": skill_runs, "can_produce": can_produce,
@@ -244,11 +265,12 @@ def _message_payload(repo: WorkspaceRepository, message: dict[str, Any]) -> dict
         asset = dict(raw)
         asset["metadata"] = json.loads(asset.pop("metadata_json", "{}") or "{}")
         if usage in {"input", "reference"}:
+            url = _sendable_asset_url(asset)
             attachments.append({
                 "id": asset["id"], "name": asset.get("filename") or "附件", "kind": asset.get("media_type") or "file",
                 "mime_type": asset.get("mime_type"), "size": asset.get("byte_size"),
-                "url": asset.get("storage_uri") or asset.get("source_url") or "",
-                "thumbnail_url": asset.get("storage_uri") if asset.get("media_type") == "image" else "",
+                "url": url,
+                "thumbnail_url": url if asset.get("media_type") == "image" else "",
                 "extracted_text": raw.get("text_content") or "", "status": asset.get("status") or "ready",
             })
         elif usage == "result":
@@ -733,8 +755,8 @@ async def storyboard_panel_candidates(
                 "description": candidate.get("description") or "",
                 "clean_asset_id": candidate.get("clean_asset_id"),
                 "selected_asset_id": candidate.get("selected_asset_id"),
-                "clean_url": (selected or {}).get("storage_uri") or "",
-                "annotated_url": (annotated or {}).get("storage_uri") or "",
+                "clean_url": _sendable_asset_url(selected),
+                "annotated_url": _sendable_asset_url(annotated),
                 "send_to_provider": bool(candidate.get("send_to_provider")),
                 "is_current": bool(candidate.get("is_current")),
                 "created_at": candidate.get("created_at"),
@@ -882,9 +904,12 @@ async def batch_download(payload: BatchDownloadInput, request: Request) -> dict[
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
             for index, asset in enumerate(assets, start=1):
                 assert asset is not None
-                url = asset.get("storage_uri") or asset.get("source_url")
+                url = _sendable_asset_url(asset)
                 if not url:
-                    continue
+                    raise HTTPException(
+                        status_code=404,
+                        detail={"error_code": "NOT_FOUND", "message": "部分产物尚未就绪或地址无效"},
+                    )
                 response = await client.get(url)
                 response.raise_for_status()
                 suffix = Path(urlsplit(url).path).suffix or (".mp4" if asset.get("media_type") == "video" else ".png")
@@ -907,16 +932,18 @@ async def download_bundle(bundle_id: str, request: Request) -> FileResponse:
 @router.get("/assets/{asset_id}/download")
 async def download_asset(asset_id: str, request: Request) -> RedirectResponse:
     asset = _repo(request).get_asset(asset_id, client_id=str(_value(_principal(request), "code_id")))
-    if not asset or not (asset.get("storage_uri") or asset.get("source_url")):
+    url = _sendable_asset_url(asset)
+    if not asset or not url:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "产物不存在"})
     _record_asset_action(request, asset, EventAction.DOWNLOAD)
-    return RedirectResponse(asset.get("storage_uri") or asset.get("source_url"), status_code=307)
+    return RedirectResponse(url, status_code=307)
 
 
 @router.get("/assets/{asset_id}/preview")
 async def preview_asset(asset_id: str, request: Request) -> RedirectResponse:
     asset = _repo(request).get_asset(asset_id, client_id=str(_value(_principal(request), "code_id")))
-    if not asset or not (asset.get("storage_uri") or asset.get("source_url")):
+    url = _sendable_asset_url(asset)
+    if not asset or not url:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "产物不存在"})
     _record_asset_action(request, asset, EventAction.PREVIEW)
-    return RedirectResponse(asset.get("storage_uri") or asset.get("source_url"), status_code=307)
+    return RedirectResponse(url, status_code=307)
