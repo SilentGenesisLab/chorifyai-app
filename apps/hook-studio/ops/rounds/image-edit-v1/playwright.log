@@ -1,0 +1,16 @@
+﻿
+Running 10 tests using 6 workers
+
+  -   4 [mobile-chrome] › e2e\full-storyboard-mvp.spec.ts:199:1 › 全镜头故事板三视图同步、逐镜修订、审批与生产门禁
+  -   5 [mobile-chrome] › e2e\hook-studio.spec.ts:15:1 › 无码 API 为 401，客户进入新版全镜头工作台
+  -   6 [mobile-chrome] › e2e\image-edit.spec.ts:9:1 › 局部修图完成合同、进度、预览与成品入库
+  -   8 [mobile-chrome] › e2e\hook-studio.spec.ts:39:1 › 管理员可查看客户、用量和服务状态
+  ok  1 [desktop-chrome] › e2e\hook-studio.spec.ts:15:1 › 无码 API 为 401，客户进入新版全镜头工作台 (2.7s)
+  ok  3 [desktop-chrome] › e2e\image-edit.spec.ts:9:1 › 局部修图完成合同、进度、预览与成品入库 (3.1s)
+  ok  9 [desktop-chrome] › e2e\hook-studio.spec.ts:39:1 › 管理员可查看客户、用量和服务状态 (1.4s)
+  ok  7 [mobile-chrome] › e2e\full-storyboard-mvp.spec.ts:259:1 › 移动端工作台、分镜带和左右抽屉无横向溢出 (4.0s)
+  ok  2 [desktop-chrome] › e2e\full-storyboard-mvp.spec.ts:199:1 › 全镜头故事板三视图同步、逐镜修订、审批与生产门禁 (5.9s)
+  -  10 [desktop-chrome] › e2e\full-storyboard-mvp.spec.ts:259:1 › 移动端工作台、分镜带和左右抽屉无横向溢出
+
+  5 skipped
+  5 passed (8.1s)

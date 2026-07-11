@@ -1,0 +1,27 @@
+image-edit-v1 redline scan 2026-07-11T21:42:00+08:00
+
+forbidden-copy:
+  command: rg -n "魔法|一键生成您|✨|梦想|哦～" app frontend/src
+  result: PASS, zero matches
+
+hardcoded-colors-outside-token-file:
+  command: rg -n "#[0-9A-Fa-f]{3,8}|rgba?\(|hsla?\(" frontend/src --glob '!*.css'
+  result: PASS, zero matches
+
+css-token-whitelist:
+  command: rg -n "#[0-9A-Fa-f]{3,8}|rgba?\(|hsla?\(" frontend/src --glob '*.css'
+  result: PASS, 55 matches, all are :root variable declarations in frontend/src/styles.css:6-60
+
+local-browser-state:
+  command: rg -n "localStorage" app frontend/src
+  result: PASS, zero matches
+
+secret-source: PASS
+secret-bundle: PASS
+unauthenticated-bootstrap: 401 PASS
+client-admin-export: 403 PASS
+admin-data-export: 200 PASS
+ab-test-code: PASS, zero matches
+third-party-runtime-install: PASS, none added
+frontend-provider-direct-call: PASS, none added
+provider-credential-in-browser-bundle: PASS, none found

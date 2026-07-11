@@ -46,7 +46,10 @@
 | 蒙版外像素 | PASS，849100 像素中 0 个变化 |
 | 图片编辑合同、资产版本、训练样本 | PASS，SQLite 双向可追溯 |
 | 完整数据 ZIP | PASS，含 25 张表 JSONL 与 manifest，排除访问码和密钥 |
-| 公网部署 | PENDING，本增量尚未切换公网 release |
+| 公网部署 | PASS，Hook `7361c7a` / schema `6`，Kernel 图片编辑路由已切换 |
+| 公网 Playwright 登录与后台 | PASS，2 passed，2 按项目视口预期跳过 |
+| 公网鉴权 | PASS，无码 bootstrap 返回 401 |
+| 独立 Inspector | 功能 Gate PASS；项目级主站 18 路由视觉 Gate FAIL，范围冲突见 `ops/rounds/image-edit-v1/review.md` |
 
 ### 2026-07-10 Chat OS v2 基线
 

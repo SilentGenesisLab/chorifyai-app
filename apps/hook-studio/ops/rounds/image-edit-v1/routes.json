@@ -1,7 +1,33 @@
 {
-  "healthz": 200,
-  "bootstrap_without_code": 401,
-  "client_bootstrap": 200,
-  "client_admin_export": 403,
-  "admin_data_export": 200
+  "verified_at": "2026-07-11T21:41:00+08:00",
+  "base_url": "https://chorifyai.sligenai.cn",
+  "ui_routes": {
+    "/workspace": 200,
+    "/workspace?state=first": 200,
+    "/create?stage=1": 200,
+    "/create?stage=2": 200,
+    "/create?stage=3": 200,
+    "/production": 200,
+    "/funnel": 200,
+    "/funnel?tab=bottom": 200,
+    "/funnel?drawer=creative": 200,
+    "/publish": 200,
+    "/data": 200,
+    "/data?drawer=report": 200,
+    "/projects": 200,
+    "/projects?modal=new": 200,
+    "/assets": 200,
+    "/inspiration": 200,
+    "/canvas": 200,
+    "/dev/ui": 200
+  },
+  "hook_studio": {
+    "healthz": 200,
+    "bootstrap_without_code": 401,
+    "client_bootstrap": 200,
+    "client_admin_export": 403,
+    "admin_data_export": 200,
+    "missing_resource": 404,
+    "invalid_business": 422
+  }
 }

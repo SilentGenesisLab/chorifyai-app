@@ -10,7 +10,7 @@
 - 轮次：`ops/rounds/image-edit-v1`
 - 分支：`feature/hook-studio-chat-os`
 - 公网目标：`https://chorifyai.sligenai.cn/hook-studio/`
-- 当前状态：READY_FOR_INSPECTOR
+- 当前状态：DEPLOYED_WITH_SCOPED_VERIFY_EXCEPTION
 - Inspector：独立子代理，只接收 Gate、改动清单与本轮证据
 
 ## 已冻结决策
@@ -33,7 +33,9 @@
 - 图片/视频独立队列已改为按客户轮转；批量视频不再一次并发全部版本。
 - 管理后台完整数据 ZIP、训练 JSONL 和事件 JSONL 均可导出。
 - Pytest 全量、前端 production build 和 Playwright 图片编辑流程已通过。
+- Kernel 已切换到 `20260711132952-image-edit`，远端本地 mock 烟测、鉴权健康检查与 OpenAPI 图片编辑路由均通过。
+- Hook Studio 已切换到 `7361c7a-image-edit`，公网 health 返回 build `7361c7a`、schema `6`，无码鉴权与公网 Playwright 已通过。
 
 ## 下一动作
 
-完成独立 Inspector，部署 Hook Studio 与 Kernel 同一兼容版本，再做公网鉴权、局部编辑和数据导出验收。
+Hook Studio 继续按当前公网版本运行；主站 18 路由视觉 Gate 的范围冲突已写入本轮 `review.md`，不得误报为通过。

@@ -1,0 +1,18 @@
+{
+  "verified_at": "2026-07-11T21:38:20+08:00",
+  "url": "https://chorifyai.sligenai.cn/hook-studio/healthz",
+  "http_status": 200,
+  "response": {
+    "status": "ok",
+    "service": "hook-studio",
+    "build_sha": "7361c7a",
+    "schema_version": "6",
+    "skill_pack_version": "adaptive-storyboard-v1.1.0"
+  },
+  "unauthenticated_bootstrap_status": 401,
+  "systemd_service": "active",
+  "release": "/opt/hook-studio/releases/7361c7a-image-edit",
+  "kernel_release": "/home/donxu/apps/ai-video-kernel/releases/20260711132952-image-edit",
+  "kernel_authenticated_health": 200,
+  "kernel_openapi_image_edit_route": true
+}

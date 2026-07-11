@@ -1,0 +1,10 @@
+{
+  "verified_at": "2026-07-11T21:48:00+08:00",
+  "release": "7361c7a-image-edit",
+  "client_export_status": 403,
+  "admin_export_status": 200,
+  "archive_bytes": 154209,
+  "jsonl_tables": 25,
+  "manifest_present": true,
+  "credentials_in_archive": false
+}

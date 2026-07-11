@@ -1,0 +1,11 @@
+﻿
+Running 4 tests using 2 workers
+
+  -  2 [mobile-chrome] › e2e\hook-studio.spec.ts:15:1 › 无码 API 为 401，客户进入新版全镜头工作台
+  -  3 [mobile-chrome] › e2e\hook-studio.spec.ts:39:1 › 管理员可查看客户、用量和服务状态
+  ok 1 [desktop-chrome] › e2e\hook-studio.spec.ts:15:1 › 无码 API 为 401，客户进入新版全镜头工作台 (5.0s)
+  ok 4 [desktop-chrome] › e2e\hook-studio.spec.ts:39:1 › 管理员可查看客户、用量和服务状态 (4.5s)
+
+  2 skipped
+  2 passed (10.9s)
+
