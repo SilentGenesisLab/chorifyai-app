@@ -283,13 +283,20 @@ def _task_payload(task: dict[str, Any], queue_position: int | None = None) -> di
         display_stage = "镜头生成"
     else:
         display_stage = STAGE_MAP.get(stage, stage)
+    result = _public_projection(task.get("result") or {})
+    result_storyboard = result.get("storyboard") if isinstance(result, dict) else None
+    storyboard_id = result_storyboard.get("id") if isinstance(result_storyboard, dict) else None
+    params = task.get("params") or {}
     return {
         "id": task["id"], "conversation_id": task["conversation_id"], "title": task.get("title") or "生产任务",
         "tool": TOOL_REVERSE.get(task.get("kind"), "create_video"), "status": status,
         "stage": display_stage, "progress": round(float(task.get("progress") or 0) * 100),
         "queue_position": queue_position, "eta_seconds": (queue_position or 0) * 45 if queue_position else None,
         "error_message": task.get("error_message") or "",
-        "asset_ids": list((task.get("params") or {}).get("asset_ids") or []),
+        "asset_ids": list(params.get("asset_ids") or []),
+        "params": {key: params[key] for key in ("duration_seconds", "batch_count") if key in params},
+        "result": result, "storyboard_id": storyboard_id,
+        "heartbeat_at": task.get("updated_at"),
         "created_at": task.get("created_at"), "updated_at": task.get("updated_at"),
         "version": task.get("version"),
     }
