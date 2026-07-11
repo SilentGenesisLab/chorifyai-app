@@ -1,118 +1,65 @@
-# Hook Studio 架构设计 v1.0
+# Hook Studio 全镜头 MVP 架构 v2.0
 
-状态：执行批准  
-日期：2026-07-10
+状态：已实现并进入上线验收
+日期：2026-07-11
 
-## 方案比较
+## 系统边界
 
-### 方案一：独立模块化单体（采用）
+Hook Studio 是独立模块化单体：React/Vite 提供中文客户工作台与管理后台，FastAPI 提供鉴权、命令、状态查询、SSE、Skill 编排、配额、训练数据和静态资源，SQLite 是任务状态事实源。公网由 Nginx 以 `/hook-studio/` 子路径反代，systemd 守护一个应用进程。
 
-FastAPI 提供 API、鉴权、SQLite、队列、管理和静态 SPA；React/Vite 构建产物由同一进程服务。图片和视频各有独立 worker pool。优点是单进程部署、边界清楚、易备份、易在 Nginx 子路径运行。
+浏览器只访问 Hook Studio。所有生成、媒体探测、上传、理解和转码请求都由服务端转交视频 Kernel；访问码、Kernel 凭据和内部能力名称不会进入前端 bundle、DOM 或客户 API。
 
-### 方案二：并入现有根 Next.js
+## 分层
 
-可复用现有组件，但根工作树属于另一条 ChorifyAI/QC 主线且大量未提交；会混淆发布、配额、鉴权和故障域。拒绝。
+| 层 | 组件 | 职责 |
+| --- | --- | --- |
+| 交互层 | `frontend/src/components/FullStoryboardWorkspace.tsx` | 对话、素材上传、4-60 秒时长确认、镜头表、分镜带、动态预演、审批、资产库、预览板、成品库 |
+| 命令层 | `app/api/workspace.py` | REST 命令、401/404/409/422 边界、Idempotency-Key、租户投影、批量下载 |
+| 通信层 | `app/services/workflow_events.py` | SQLite durable event、SSE、Last-Event-ID 重放、心跳与断线恢复 |
+| 编排层 | `app/services/production.py` | 图片/视频独立队列、全流程状态机、配额预留、逐镜并发、拼接与失败补偿 |
+| Skill 层 | `app/skill_runtime.py` | Brief、完整镜头合同、Panel 计划、引用清单、提示词编译、生产前门禁、审批策略和可观测 SkillRun |
+| 工具层 | `app/providers/kernel.py`、`app/services/media_ops.py` | 只调用已验证的 Kernel 多模态合同；本地 FFmpeg 负责动态预演和确定性媒体操作 |
+| 数据层 | `app/repositories/workspace.py`、`app/db.py` | Storyboard/Shot/Panel、候选历史、审批、事件、资产、对话、任务、配额和训练表 |
+| 运维层 | `deploy/`、`scripts/` | Nginx/systemd、健康探针、备份、恢复、安检、周报与洞察 |
 
-### 方案三：前后端双服务
+## 视频生产状态机
 
-React 与 FastAPI 分开部署，扩展性强，但当前只增加 systemd、CORS、版本和运维复杂度。v1 拒绝，后续达到多实例需求再拆。
+1. 客户输入文本、文件、图片、视频、音频或链接；视频总时长必须为 4-60 秒。
+2. 服务端先落消息和任务，重复提交使用同一 Idempotency-Key 时返回原任务，不重复生产。
+3. Skill Runtime 依次完成人话需求、商业节拍、完整镜头合同、三画格计划、连续性与引用清单。
+4. 每个 Shot 固定至少包含 `start/action/result` 三个 required Panel；每个 Panel 同时保留带标注审阅图和独立 clean frame。
+5. 客户可只重生一个 Panel、重生整镜、切换历史候选、退回或批准；任何修订都会使旧审批和旧 Animatic 失效。
+6. 所有镜头、所有 required Panel、整板和动态预演均确认后，服务端严格门禁再次校验租户、资产 URI、状态、引用清单和 4-15 秒单镜时长。
+7. 门禁通过后才原子预留视频额度。每镜只把批准的 clean frame 传入 Kernel，带标注故事板永不进入生成请求。
+8. 单镜按 4-15 秒真实生成；同一变体内按镜头顺序保持连续，不同变体可在独立视频信号量内并发。
+9. 每个生成任务取得 submit ID 后只轮询该 ID，不重新提交。等待阶段返回不伪造百分比的心跳、已等待时间与最后心跳。
+10. 单镜和最终拼接都检查视频轨、时长、9:16 和音轨；通过后进入成品库，失败释放额度并保留可回炉的镜头与事件证据。
 
-## 部署边界
+## 数据合同
 
-- GitHub 仓库：`SilentGenesisLab/chorifyai-app`，独立模块目录 `apps/hook-studio/`
-- 本地代码：`apps/hook-studio/`
-- 分支：`feature/hook-studio-v1` -> `uat` -> `main`
-- 远端目录：`/opt/hook-studio`
-- 服务监听：`127.0.0.1:8011`（8010 已被现有 Chorify backend 占用）
-- 公网网址：`https://chorifyai.sligenai.cn/hook-studio/`
-- 管理路径：`/hook-studio/admin`
-- 进程：一个 systemd service；Nginx 反代并保留子路径前缀。
+`Storyboard 1:N Shot 1:N Panel` 是持久化硬约束。一个可保存的 Shot 必须有三个角色完整、含可用 clean frame 的 Panel。Panel 修订采用 append-only 历史：当前版本被 supersede，候选列表仍可审计和切回；选择旧候选会创建新的当前修订，而不是倒改历史行。
 
-## 模块
+关键可观测表：
 
-| 模块 | 职责 |
-| --- | --- |
-| `app/auth.py` | 访问码加载、登录、签名 session、客户/管理员授权 |
-| `app/db.py` | SQLite 初始化、事务、查询与迁移 |
-| `app/models.py` | API 与内部数据模型 |
-| `app/presets.py` | 版本化预设加载、排序和模板灰度 |
-| `app/skill_policy.py` | 生成前 policy gate 与可观测 trace |
-| `app/providers/kernel.py` | Kernel capability API 上传、图片、视频提交与轮询 |
-| `app/queues.py` | 图片/视频独立队列、worker、恢复和 ETA |
-| `app/quota.py` | 全站视频日顶、客户子配额、预扣与失败补偿 |
-| `app/events.py` | SQLite 与 JSONL 双写、导出和偏好信号 |
-| `app/qc.py` | 视频 metadata、音轨、时长、比例与可播放检查 |
-| `app/backup.py` | SQLite/log 打包、OSS 上传、保留 30 份、恢复 |
-| `app/insights.py` | 下载率、重排、灰度统计、Markdown 周报 |
-| `app/api/*` | auth、studio、admin、health 路由 |
-| `frontend/` | 中文 SPA、管理后台、队列与画廊 |
+- `skill_runs`：skill/version/status/duration/input/output/blocking reason 与私有 trace。
+- `workflow_events`：SSE 重放和任务恢复事实源。
+- `approval_decisions`：scope、目标 revision、反馈与幂等键。
+- `quota_ledger`：图片与视频的 reserved/committed/released。
+- `training_examples`、`messages`、`assets`：对话、素材、输出与训练处理索引。
 
-## 鉴权与秘密
+## 能力边界
 
-- `access_codes.yaml` 只存在服务端 secret 目录，仓库只提交 example。
-- Provider URL、Bearer、session signing key、OSS 信息只从环境变量读取。
-- 浏览器不接触 provider key、Kernel key 或 OSS key。
-- `/api/health/live` 可匿名；其余 `/api/*` 无码返回 401。
-- session 使用 HttpOnly、SameSite=Lax、Secure cookie；复用现有有效 HTTPS 证书。
-- 事件中的 `access_code` 存稳定 code ID，不存真实登录码。
+- 当前真实视频提交只启用已探针验证的 `multimodal` 合同；未验证的首尾帧、延长或编辑模式在网络请求前拒绝。
+- 60 秒是 MVP 成片上限，不代表单次模型调用能力。系统把长成片拆成多个 4-15 秒镜头再拼接。
+- “故事板 Skill”不是给生成 API 增加一个神秘参数，而是服务端的可版本化编译、门禁、资产和审批链；生成 API 只接收门禁后确定的 clean frame、引用槽位和镜头提示词。
+- 动态预演用于节奏与构图确认，不冒充最终模型成片。
+- 替换、复刻和批量能力共用相同 Storyboard/Panel/Approval/QC 合同，不能绕过确认链。
 
-## 数据模型
+## 部署
 
-### `jobs`
-
-`id, client_id, mode, preset_id, template_version, prompt_user, prompt_final, params_json, model, status, queue_name, provider_job_id, result_url, result_meta_json, skill_trace_json, error_code, error_message, retry_count, queued_at, started_at, finished_at, deleted_at, parent_job_id`
-
-### `events`
-
-按宪章字段保存，并增加 `job_id, client_id, queue_name, queue_wait_ms, provider_attempt, skill_trace, error_code`。`access_code` 字段写 code ID。
-
-### `daily_usage`
-
-`day_cn, client_id, video_reserved, video_succeeded, video_failed, updated_at`。同一事务内先预留，再提交 provider；失败释放预留，成功转为 succeeded。
-
-### `settings`
-
-保存 `global_video_daily_limit=100`、图片/视频并发、模板流量和维护开关。
-
-## 队列与恢复
-
-- `image` 与 `video` 两个 `asyncio.Queue`，分别读取 `IMAGE_CONCURRENCY` 与 `VIDEO_CONCURRENCY`。
-- 默认图片并发 2、视频并发 2；管理后台可调整持久值，进程重启生效。
-- 提交先落 SQLite，再入队。服务启动时重新入队 `queued`；遗留 `running` 标记为 `queued` 并增加恢复事件。
-- 队列位置按同 queue 的 `queued_at` 计算；ETA 使用最近 20 个同模式成功任务的中位耗时，样本不足时返回配置区间。
-
-## Skill Policy
-
-每个视频 job 生成以下 trace：
-
-```json
-{
-  "policy_pack": "hook-video-reliability",
-  "version": "1.0.0",
-  "checks": [
-    {"id": "slot-order", "status": "pass"},
-    {"id": "reference-role", "status": "pass"},
-    {"id": "action-causality", "status": "pass"},
-    {"id": "duration-ratio", "status": "pass"},
-    {"id": "native-audio-intent", "status": "pass"},
-    {"id": "privacy-prohibited-elements", "status": "pass"}
-  ]
-}
-```
-
-任一 hard check 失败时不扣视频额度、不调用 provider，并返回中文可修正错误。参考图存在时必须建立 request-local slot manifest；无参考图时显式记录 `slot_manifest=[]`，不能伪造绑定。
-
-## Provider 与错误
-
-- 图片：Kernel `/capabilities/v1/images/generate`，请求超时后最多重试一次。
-- 视频：Kernel `/capabilities/v1/videos/generate`，提交最多两次；保存 `submit_id` 后只轮询同一任务，不因空响应重复提交。
-- 所有成功 URL 立即写入 SQLite；视频完成后做媒体探测。
-- 错误码稳定为：`AUTH_REQUIRED, CODE_DISABLED, QUOTA_EXHAUSTED, INPUT_INVALID, SKILL_GATE_BLOCKED, PROVIDER_TIMEOUT, PROVIDER_REJECTED, RESULT_INVALID, INTERNAL_ERROR`。
-- 前端永不白屏；所有错误显示请求 ID 和可操作下一步。
-
-## 测试
-
-- 单元：auth、quota、UTC+8、双队列、skill gate、事件双写、软删除、备份清单。
-- 集成：fake Kernel 完整生成；真实 Kernel 小探针；无码 401；超额拒绝；重启恢复。
-- Playwright：客户登录、图片/视频任务、队列、画廊、重生成、删除、管理员登录与配额修改。
-- 安检：secret scan、前端 bundle scan、HTTP header、访问隔离、日志完整性、备份恢复。
+- 仓库：`SilentGenesisLab/chorifyai-app`，分支 `feature/hook-studio-chat-os`
+- 模块：`apps/hook-studio/`
+- 公网：`https://chorifyai.sligenai.cn/hook-studio/`
+- 应用监听：`127.0.0.1:8011`
+- 发布目录：`/opt/hook-studio/releases/<commit>`，`/opt/hook-studio/current` 原子切换
+- 数据与秘密：`/var/lib/hook-studio`、`/etc/hook-studio`
