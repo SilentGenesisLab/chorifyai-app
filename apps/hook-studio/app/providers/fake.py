@@ -26,12 +26,12 @@ class FakeKernelProvider:
             trace={"provider": "fake", "attempts": 1},
         )
 
-    async def submit_video(self, *, prompt: str, image_urls: list[str], duration: int, request_id: str, video_urls: list[str] | None = None, metadata: dict[str, Any] | None = None) -> ProviderResult:
+    async def submit_video(self, *, prompt: str, image_urls: list[str], duration: int, request_id: str, video_urls: list[str] | None = None, metadata: dict[str, Any] | None = None, generation_mode: str = "multimodal") -> ProviderResult:
         return ProviderResult(
             "success",
             "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
             f"fake-video-{request_id}",
-            trace={"provider": "fake", "attempts": 1},
+            trace={"provider": "fake", "attempts": 1, "generation_mode": generation_mode},
         )
 
     async def poll_video(self, submit_id: str, *, request_id: str, external_ref: str = "hook-studio") -> ProviderResult:
